@@ -1,0 +1,97 @@
+// Wires the feel pipeline (audio + haptics + effects) into the game's
+// onImpact / crack / shatter hooks. GameScene binds an Effects instance once
+// per scene; audio/haptics are plain module singletons.
+
+import { MATERIALS, type MaterialId } from '../game/materials';
+import { Effects } from './effects';
+import {
+  ensureAudioContext,
+  playImpactSound,
+  playGlassCrackSound,
+  playGlassShatterSound,
+  setMuted as setAudioMuted,
+  isMuted as isAudioMuted,
+} from './audio';
+import { vibrate, setVibrationEnabled, isVibrationEnabled } from './haptics';
+import { impactToHaptic } from './mapping';
+
+export { setVibrationEnabled, isVibrationEnabled };
+
+/** Impact force (N) above which an impact counts as "big" for hit-stop/droplets. Matches glass's breakForce-level threshold from materials.ts. */
+const BIG_IMPACT_FORCE = MATERIALS.glass.glass.breakForce;
+const HIT_STOP_MS = 40;
+
+let effects: Effects | null = null;
+
+/** GameScene calls this once after creating its Effects instance. */
+export function bindEffects(e: Effects): void {
+  effects = e;
+}
+
+/** Call from inside a user-gesture handler (pointerdown/keydown) so WebAudio can start. */
+export function initFxGesture(): void {
+  ensureAudioContext();
+}
+
+export function setMuted(m: boolean): void {
+  setAudioMuted(m);
+}
+
+export function isMuted(): boolean {
+  return isAudioMuted();
+}
+
+/** Advances pooled particle motion; call once per rendered frame with real dt. */
+export function updateEffects(dtSeconds: number): void {
+  effects?.update(dtSeconds);
+}
+
+/** Returns the slice of dt physics should step by this frame (0 while hit-stopped). */
+export function consumeHitStopDt(dtSeconds: number): number {
+  return effects ? effects.consumeDt(dtSeconds) : dtSeconds;
+}
+
+/** Main per-contact hook: sound, haptic, and material-appropriate small effects. */
+export function fx(
+  pieceMaterial: MaterialId,
+  _otherMaterial: MaterialId | null,
+  force: number,
+  xPx: number,
+  yPx: number,
+): void {
+  playImpactSound(pieceMaterial, force);
+
+  const material = MATERIALS[pieceMaterial];
+  const hapticScale = impactToHaptic(force);
+  if (hapticScale > 0) {
+    vibrate(material.feel.vibrate.map((ms) => Math.max(1, Math.round(ms * hapticScale))));
+  }
+
+  if (effects) {
+    if (pieceMaterial === 'stone') effects.dust(xPx, yPx, 8, material.colors.stroke);
+    else if (pieceMaterial === 'wood') effects.dust(xPx, yPx, 4, material.colors.stroke);
+
+    if (material.feel.shake > 0) {
+      effects.shake(material.feel.shake * Math.min(1, force / (BIG_IMPACT_FORCE * 1.2)));
+    }
+
+    if (force >= BIG_IMPACT_FORCE) {
+      effects.hitStop(HIT_STOP_MS);
+      if (pieceMaterial === 'jelly') effects.droplets(xPx, yPx);
+    }
+  }
+}
+
+/** Called once when a glass piece transitions to cracked. */
+export function fxGlassCrack(_xPx: number, _yPx: number): void {
+  playGlassCrackSound();
+  vibrate([10]);
+}
+
+/** Called once when a piece (glass) shatters. */
+export function fxGlassShatter(xPx: number, yPx: number, color: number): void {
+  playGlassShatterSound();
+  vibrate(MATERIALS.glass.feel.vibrate);
+  effects?.shatter(xPx, yPx, color);
+  effects?.hitStop(HIT_STOP_MS);
+}
