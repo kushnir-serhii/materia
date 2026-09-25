@@ -11,7 +11,7 @@ declare global {
       height: () => number;
       reset: () => void;
       stepFast: (seconds: number) => void;
-      spawn: (material: MaterialId, xMeters: number, yMeters: number) => void;
+      spawn: (material: MaterialId, xMeters: number, yMeters: number) => number | null;
       jointCount: () => number;
       freezeTopFlatness: () => number;
       freezeAngleDeg: () => number;
@@ -23,11 +23,16 @@ declare global {
       allSleeping: () => boolean;
       hudWrenchCenter: () => { x: number; y: number };
       hudDevPanelOpen: () => boolean;
-      removals: () => { id: number; material: MaterialId; reason: 'fell' | 'shatter' | 'melt' | 'froze' | 'reset' | 'error' | 'culled'; ageMs: number; at: number }[];
+      hudDevPropsLine: () => string;
+      removals: () => { id: number; material: MaterialId; reason: 'fell' | 'shatter' | 'melt' | 'froze' | 'reset' | 'error' | 'culled' | 'eaten'; ageMs: number; at: number }[];
       lastDroppedPieceId: () => number | null;
       pieceExists: (id: number) => boolean;
       dynamicPieceCount: () => number;
       settledPieceCount: () => number;
+      displayedHeight: () => number;
+      squashLevel: (id: number) => number | null;
+      hookDirection: () => number;
+      spawnWormy: (xMeters: number, yMeters: number) => number | null;
     };
   }
 }
@@ -72,7 +77,7 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-const ALL_MATERIALS: MaterialId[] = ['wood', 'stone', 'jelly', 'glass', 'freeze'];
+const ALL_MATERIALS: MaterialId[] = ['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'paper', 'freeze'];
 
 interface FuzzResult {
   actionsRun: number;
@@ -222,8 +227,12 @@ test('targeted: glue glass to ice, then shatter the glass with a stone drop', as
   await page.evaluate(() => {
     // A stone plank dropped straight onto the glass shatters it —
     // PieceManager.destroy() removes the glass body while the ice still
-    // holds a joint pointing at it.
-    window.__materia!.spawn('stone', 4.4, -2);
+    // holds a joint pointing at it. x=3.8 (not 4.4, glass's own center)
+    // stays inside the glass plank's span [3.4, 5.4] but clear of the
+    // freeze piece's footprint [4.4, 6.4] — the ice only fills *gaps*, so
+    // near x=4.4 (right at the boundary) it can end up sitting flush on
+    // top of the glass instead of beside it, shielding it from a drop.
+    window.__materia!.spawn('stone', 3.8, -2);
     window.__materia!.stepFast(3);
   });
 
@@ -379,14 +388,19 @@ test('targeted: ice-heavy tower (screenshot repro) — many freeze strips must n
   // permanently refused every one of these once the (miscounted) piece
   // total crossed 40, with no heart lost and no error, matching the report
   // ("the piece leaves the hook and just disappears... every time from
-  // then on").
+  // then on"). Placed via spawn() at the platform's fixed center — same
+  // isolation-from-toppling reasoning as the setup above, and it's
+  // PieceManager.spawn() itself (not the swinging hook, which since round 8
+  // alternates its starting direction — GDD §2.0 "Hook movement" — can send
+  // a couple of pieces far enough apart to topple an already-precarious
+  // tower on its own, an unrelated confound) that the piece-budget bug
+  // actually lives in.
   const result = await page.evaluate(() => {
     const m = window.__materia!;
     const errors: string[] = [];
     for (let i = 0; i < 15; i++) {
-      m.setMaterial('wood');
-      const ok = m.drop();
-      if (!ok) errors.push(`drop #${i} was refused (spawn() returned null) well under the real body budget`);
+      const id = m.spawn('wood', 5.4, 8);
+      if (id === null) errors.push(`drop #${i} was refused (spawn() returned null) well under the real body budget`);
       m.stepFast(1);
     }
     return { errors, bodyCountAtEnd: m.pieceCount() };
@@ -465,8 +479,10 @@ test('targeted: melt runs through to completion after every glued piece was alre
 
   await page.evaluate(() => {
     // Shatter the glass the ice is glued to well before melt would ever
-    // start walking its joint list on its own.
-    window.__materia!.spawn('stone', 4.4, -2);
+    // start walking its joint list on its own. x=3.8 (not 4.4, glass's own
+    // center) stays inside the glass plank's span but clear of the freeze
+    // piece's footprint — see the identical comment in the test above.
+    window.__materia!.spawn('stone', 3.8, -2);
     window.__materia!.stepFast(3);
   });
   expect(await page.evaluate(() => window.__materia!.countByMaterial('glass'))).toBe(0);

@@ -11,7 +11,7 @@ declare global {
       height: () => number;
       reset: () => void;
       stepFast: (seconds: number) => void;
-      spawn: (material: MaterialId, xMeters: number, yMeters: number) => void;
+      spawn: (material: MaterialId, xMeters: number, yMeters: number) => number | null;
       jointCount: () => number;
       freezeTopFlatness: () => number;
       freezeAngleDeg: () => number;
@@ -23,39 +23,56 @@ declare global {
       allSleeping: () => boolean;
       hudWrenchCenter: () => { x: number; y: number };
       hudDevPanelOpen: () => boolean;
-      removals: () => { id: number; material: MaterialId; reason: 'fell' | 'shatter' | 'melt' | 'froze' | 'reset' | 'error' | 'culled'; ageMs: number; at: number }[];
+      hudDevPropsLine: () => string;
+      removals: () => { id: number; material: MaterialId; reason: 'fell' | 'shatter' | 'melt' | 'froze' | 'reset' | 'error' | 'culled' | 'eaten'; ageMs: number; at: number }[];
       lastDroppedPieceId: () => number | null;
       pieceExists: (id: number) => boolean;
       dynamicPieceCount: () => number;
       settledPieceCount: () => number;
+      displayedHeight: () => number;
+      squashLevel: (id: number) => number | null;
+      hookDirection: () => number;
+      spawnWormy: (xMeters: number, yMeters: number) => number | null;
     };
   }
 }
 
 // Not part of the smoke suite's pass/fail contract — just captures reference
 // screenshots of the M0 prototype for docs/screens/.
-test('capture M0 screenshot: tower of 6 mixed pieces, mid-game', async ({ page }) => {
+test('capture M0 screenshot: mixed tower incl. steel, polystyrene, paper, green jelly, wormy wood', async ({
+  page,
+}) => {
   await page.goto('/');
   await page.waitForFunction(() => !!window.__materia, undefined, { timeout: 5000 });
 
-  // Placed via spawn() (not the swinging hook) so every piece lands
-  // perfectly centered on the one below it — a reliable, non-flaky stack
-  // for a reference screenshot, rather than however the hook's swing phase
-  // happened to line up. x=5.4m is the platform's world-space center.
-  // Order: stable stone/wood base, jelly and glass last (on top) so
-  // nothing lands on either of them after and topples/breaks them.
-  const sequence: MaterialId[] = ['stone', 'wood', 'stone', 'wood', 'jelly', 'glass'];
-  let restingYM = 14.4; // first piece's resting center-y (platform top - half piece height)
-  for (const material of sequence) {
+  // Placed via spawn()/spawnWormy() (not the swinging hook) so every piece
+  // lands perfectly centered on the one below it — a reliable, non-flaky
+  // stack for a reference screenshot. x=5.4m is the platform's world-space
+  // center. Order: steel/stone/wormy-wood as a heavy, stable base; the
+  // lighter, more fragile materials (polystyrene, jelly, paper) go on top
+  // so nothing lands on them afterward and squashes/topples/breaks them.
+  // heightM matches each material's actual MaterialSize (paper is thin,
+  // 0.15m — see materials.ts).
+  const sequence: { m: MaterialId | 'wormy-wood'; heightM: number }[] = [
+    { m: 'steel', heightM: 0.6 },
+    { m: 'stone', heightM: 0.6 },
+    { m: 'wormy-wood', heightM: 0.6 },
+    { m: 'polystyrene', heightM: 0.6 },
+    { m: 'jelly', heightM: 0.6 },
+    { m: 'paper', heightM: 0.15 },
+  ];
+  let restingYM = 14.7; // first piece's resting center-y (platform top - half piece height)
+  for (const entry of sequence) {
     const dropYM = restingYM - 1.5; // small clearance so it visibly falls and settles
     await page.evaluate(
       ({ m, y }) => {
-        window.__materia!.spawn(m, 5.4, y);
+        if (m === 'wormy-wood') window.__materia!.spawnWormy(5.4, y);
+        else window.__materia!.spawn(m as MaterialId, 5.4, y);
         window.__materia!.stepFast(1.5);
       },
-      { m: material, y: dropYM },
+      { m: entry.m, y: dropYM },
     );
-    restingYM -= 0.6; // plank height
+    restingYM -= entry.heightM;
   }
   // let the camera lerp settle
   await page.evaluate(() => window.__materia!.stepFast(0.5));

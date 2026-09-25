@@ -3,8 +3,9 @@ import type { MaterialId } from '../../src/game/materials';
 import { ALL_MATERIAL_IDS } from '../../src/game/materials';
 import { DEV_PICKER_LAYOUT } from '../../src/ui/devPickerLayout';
 
-const GLASS_SWATCH_X = DEV_PICKER_LAYOUT.swatchCenterX(ALL_MATERIAL_IDS.indexOf('glass'));
-const DEV_PANEL_SWATCH_Y = DEV_PICKER_LAYOUT.swatchCenterY;
+const GLASS_SWATCH_INDEX = ALL_MATERIAL_IDS.indexOf('glass');
+const GLASS_SWATCH_X = DEV_PICKER_LAYOUT.swatchCenterX(GLASS_SWATCH_INDEX);
+const DEV_PANEL_SWATCH_Y = DEV_PICKER_LAYOUT.swatchCenterY(GLASS_SWATCH_INDEX);
 
 declare global {
   interface Window {
@@ -16,7 +17,7 @@ declare global {
       height: () => number;
       reset: () => void;
       stepFast: (seconds: number) => void;
-      spawn: (material: MaterialId, xMeters: number, yMeters: number) => void;
+      spawn: (material: MaterialId, xMeters: number, yMeters: number) => number | null;
       jointCount: () => number;
       freezeTopFlatness: () => number;
       freezeAngleDeg: () => number;
@@ -28,11 +29,16 @@ declare global {
       allSleeping: () => boolean;
       hudWrenchCenter: () => { x: number; y: number };
       hudDevPanelOpen: () => boolean;
-      removals: () => { id: number; material: MaterialId; reason: 'fell' | 'shatter' | 'melt' | 'froze' | 'reset' | 'error' | 'culled'; ageMs: number; at: number }[];
+      hudDevPropsLine: () => string;
+      removals: () => { id: number; material: MaterialId; reason: 'fell' | 'shatter' | 'melt' | 'froze' | 'reset' | 'error' | 'culled' | 'eaten'; ageMs: number; at: number }[];
       lastDroppedPieceId: () => number | null;
       pieceExists: (id: number) => boolean;
       dynamicPieceCount: () => number;
       settledPieceCount: () => number;
+      displayedHeight: () => number;
+      squashLevel: (id: number) => number | null;
+      hookDirection: () => number;
+      spawnWormy: (xMeters: number, yMeters: number) => number | null;
     };
   }
 }
@@ -270,8 +276,8 @@ test('the dev material-picker panel is hidden by default and forces the next pie
   expect(await page.evaluate(() => window.__materia!.hudDevPanelOpen())).toBe(true);
   expect(await page.evaluate(() => window.__materia!.pieceCount())).toBe(countBefore);
 
-  // Tapping the glass swatch (index 3 of 5) forces glass as the next piece,
-  // and must not itself drop a piece either.
+  // Tapping the glass swatch forces glass as the next piece, and must not
+  // itself drop a piece either.
   const swatchPage = toPagePoint(GLASS_SWATCH_X, DEV_PANEL_SWATCH_Y);
   await page.mouse.click(swatchPage.x, swatchPage.y);
   await page.waitForTimeout(50);

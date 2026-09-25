@@ -5,11 +5,14 @@
 import Phaser from 'phaser';
 import type RAPIER from '@dimforge/rapier2d-compat';
 import { PhysicsWorld, PX_PER_M, type RapierPiece } from '../physics/physics';
-import { MATERIALS, PLANK_SIZE, type Material, type MaterialId } from '../game/materials';
+import { MATERIALS, type Material, type MaterialId } from '../game/materials';
 import { createGlassPieceState, stepGlass, type GlassPieceState } from '../game/glass';
 import { createJellySpring, forceToJellyAmplitude, triggerJellySpring, stepJellySpring, type JellySpringState } from '../game/spring';
-import { drawPieceBase, drawCracks } from '../ui/pieceView';
-import { fxGlassCrack, fxGlassShatter } from '../fx';
+import { createSquashPieceState, stepSquash, SQUASH_HEIGHT_FRACTIONS, type SquashPieceState } from '../game/squash';
+import { createWormState, stepWorm, WORM_SIZE_FRACTIONS, WORM_HARDNESS_FRACTIONS, type WormState } from '../game/worm';
+import { damageFactor } from '../game/props';
+import { drawPieceBase, drawCracks, drawWormHoles } from '../ui/pieceView';
+import { fxGlassCrack, fxGlassShatter, fxSquash, fxMunch } from '../fx';
 import { FreezeController, type FreezeRuntimeState } from './FreezeController';
 
 const IMPACT_MIN_FORCE = 5;
@@ -62,6 +65,16 @@ const DYNAMIC_PIECE_BUDGET = 30;
 const SETTLE_DEPTH_M = 4;
 /** Settled pieces are dimmed slightly to read as "locked in" — subtle, not a strong visual change. */
 const SETTLED_ALPHA = 0.82;
+/** Attacker hardness used for a contact whose other side isn't a tracked piece (e.g. resting directly on the static platform) — wood-equivalent, the pre-props baseline. */
+const BASELINE_ATTACKER_HARDNESS = 5;
+/** Paper's airborne sideways flutter (GDD §2: "falls very slowly and flutters side to side"). Small enough it never meaningfully displaces the drop, stops the instant it lands (see the airborne/resting switch). */
+const PAPER_FLUTTER_FREQ_HZ = 2.4;
+const PAPER_FLUTTER_FORCE_N = 0.045;
+const PAPER_FLUTTER_TORQUE = 0.012;
+/** GDD §2.0: ~1 in 6 wood pieces spawn as a "wormy" variant (see worm.ts). */
+const WORMY_WOOD_CHANCE = 1 / 6;
+/** How often (ms) jelly/wormy-wood's cheap cosmetic animation is allowed to redraw — see updateLivingLook. Deliberately coarse, never every frame. */
+const LIVING_LOOK_REDRAW_MS = 300;
 
 /** Why a piece was removed — every removal goes through PieceManager.destroy()/logRemoval() so this is always recorded (see removals()/window.__materia.removals()). */
 export type RemovalReason =
@@ -71,7 +84,8 @@ export type RemovalReason =
   | 'froze' // a falling freeze piece converted into its compound ice body (not a loss — id changes)
   | 'reset' // manual or error-recovery reset cleared the board
   | 'error' // removed while recovering from an uncaught error mid-frame
-  | 'culled'; // piece-budget policy forcibly removed it (see DYNAMIC_PIECE_BUDGET) because nothing was resting/settleable
+  | 'culled' // piece-budget policy forcibly removed it (see DYNAMIC_PIECE_BUDGET) because nothing was resting/settleable
+  | 'eaten'; // a wormy wood piece's worm.ts timeline reached WORM_LIFETIME_S (not a loss — no heart lost)
 
 export interface RemovalRecord {
   id: number;
@@ -99,6 +113,18 @@ export interface PieceRuntime {
   hPx: number;
   glassState: GlassPieceState | null;
   jellySpring: JellySpringState | null;
+  /** only set for material === 'polystyrene'; see squash.ts. */
+  squash: SquashPieceState | null;
+  /** the piece's half-height (meters) as spawned, before any squash steps — squash.ts's SQUASH_HEIGHT_FRACTIONS are fractions of this, not of the current (possibly already-shrunk) halfHM. */
+  baseHalfHM: number;
+  /** only set for a wormy wood piece (~1 in 6 wood spawns, or forced via the dev picker's Wormy swatch); see worm.ts. Non-wormy wood and every other material carry null. A piece is never both squash and worm (only polystyrene squashes, only wood worms), so worm shrink reuses baseHalfHM as its own height baseline too — baseHalfWM is the matching width baseline. */
+  worm: WormState | null;
+  baseHalfWM: number;
+  /** Slow phase accumulator for jelly's drifting bubbles / a wormy piece's peeking worm — advanced (and the graphics redrawn) only every LIVING_LOOK_REDRAW_MS, never per frame, per the "cheap" requirement (GDD §2.0). Unused (stays 0) for every other material/variant. */
+  visualPhase: number;
+  nextVisualRedrawMs: number;
+  /** phase accumulator (radians) for paper's airborne flutter — only advanced/used for material === 'paper'. */
+  flutterPhase: number;
   lastImpactAt: number;
   /** only set for material === 'freeze'; see FreezeController. */
   freeze: FreezeRuntimeState | null;
@@ -115,6 +141,16 @@ export interface PieceRuntime {
    * counts toward the dynamic-body budget.
    */
   settled: boolean;
+  /**
+   * True from spawn until this piece's first contact-force event — see the
+   * airborne/resting linear-damping switch in step(). While true, the body
+   * runs with material.physics.airborneLinearDamping (set at creation);
+   * the moment it lands, this flips false and the body switches to
+   * material.physics.restingLinearDamping so a landed polystyrene/paper
+   * stack still settles and sleeps normally instead of feeling floaty
+   * forever.
+   */
+  airborne: boolean;
 }
 
 export type ImpactCallback = (
@@ -142,6 +178,8 @@ export class PieceManager {
   readonly freezeController: FreezeController;
   private nextId = 1;
   private frameForce = new Map<number, number>();
+  /** Same shape as frameForce, but each value has already gone through props.ts's damageFactor(attackerHardness, thisPiece'sHardness, rawForce) — what glass/squash compare against their thresholds, instead of the raw physical force (see effectiveDamageForce). */
+  private frameDamageForce = new Map<number, number>();
   /** Each piece's speed just before this frame's physics step, keyed by
    *  collider handle — reused every frame (see IMPACT_MIN_SPEED_MPS) rather
    *  than allocated fresh, per the no-per-frame-allocations rule. */
@@ -167,7 +205,14 @@ export class PieceManager {
     return this.nextId++;
   }
 
-  spawn(material: MaterialId, xM: number, yM: number): PieceRuntime | null {
+  /**
+   * `wormyOverride` only matters for material === 'wood': true/false forces
+   * the wormy variant on/off (used by GameScene's "Wormy" dev-picker
+   * swatch, and by e2e tests for a deterministic wormy spawn); omitted, a
+   * plain wood spawn rolls WORMY_WOOD_CHANCE itself. Ignored for every
+   * other material.
+   */
+  spawn(material: MaterialId, xM: number, yM: number, wormyOverride?: boolean): PieceRuntime | null {
     // spawn() must ALWAYS succeed — a long-running tower (round-6 playtest
     // follow-up) must never hit a hard "drop refused" dead end. The old
     // MAX_PIECES hard cap here (checked, worse, against `pieces.size` — a
@@ -177,8 +222,12 @@ export class PieceManager {
     // called at the end of every step(): once the *dynamic* body count
     // exceeds DYNAMIC_PIECE_BUDGET it settles (or, failing that, culls) the
     // lowest pieces so there's always room for the next spawn().
-    const halfWM = PLANK_SIZE.width / 2;
-    const halfHM = PLANK_SIZE.height / 2;
+    const size = this.materials[material].size;
+    const halfWM = size.width / 2;
+    const halfHM = size.height / 2;
+    // Decided once, up front, so the initial graphics (worm holes or not)
+    // and the PieceRuntime's `worm` state never disagree.
+    const wormy = material === 'wood' && (wormyOverride ?? Math.random() < WORMY_WOOD_CHANCE);
     const { body, collider }: RapierPiece = this.rapierWorld.createDynamicBox(
       this.materials[material],
       xM,
@@ -187,11 +236,12 @@ export class PieceManager {
       halfHM,
     );
 
-    const wPx = PLANK_SIZE.width * PX_PER_M;
-    const hPx = PLANK_SIZE.height * PX_PER_M;
+    const wPx = size.width * PX_PER_M;
+    const hPx = size.height * PX_PER_M;
     const id = this.nextId++;
     const graphics = this.scene.add.graphics();
     drawPieceBase(graphics, this.materials[material], wPx, hPx, id);
+    if (wormy) drawWormHoles(graphics, wPx, hPx, 0, id, 0);
     const container = this.scene.add.container(xM * PX_PER_M, yM * PX_PER_M, [graphics]);
 
     const piece: PieceRuntime = {
@@ -208,6 +258,13 @@ export class PieceManager {
       hPx,
       glassState: material === 'glass' ? createGlassPieceState() : null,
       jellySpring: material === 'jelly' ? createJellySpring() : null,
+      squash: material === 'polystyrene' ? createSquashPieceState() : null,
+      baseHalfHM: halfHM,
+      worm: wormy ? createWormState() : null,
+      baseHalfWM: halfWM,
+      visualPhase: Math.random() * Math.PI * 2,
+      nextVisualRedrawMs: 0,
+      flutterPhase: Math.random() * Math.PI * 2,
       lastImpactAt: 0,
       freeze:
         material === 'freeze'
@@ -216,15 +273,17 @@ export class PieceManager {
       extraColliderHandles: [],
       spawnedAtMs: performance.now(),
       settled: false,
+      airborne: true,
     };
     this.pieces.set(collider.handle, piece);
     this.piecesById.set(id, piece);
     return piece;
   }
 
-  /** Advances physics by dt, applies glass rules, freeze behaviour and the fail-off-platform rule. */
+  /** Advances physics by dt, applies glass/squash rules, freeze behaviour and the fail-off-platform rule. */
   step(dt: number, failY: number): void {
     this.frameForce.clear();
+    this.frameDamageForce.clear();
     // Snapshot approach speed *before* the step resolves contacts — after the
     // step, a body that just landed already reads near-zero (that's the
     // resting/settled state), so this is the only point we can tell "was
@@ -234,6 +293,18 @@ export class PieceManager {
     for (const [handle, piece] of this.pieces) {
       const v = piece.body.linvel();
       this.preStepSpeed.set(handle, Math.hypot(v.x, v.y));
+    }
+
+    // Paper's airborne flutter (GDD §2: "falls very slowly and flutters
+    // side to side... a gentle rotation wobble while airborne, stops once
+    // resting"). Applied once per logical piece, before the physics step so
+    // it's part of this frame's integration; naturally stops the instant
+    // `airborne` flips false in the contact-force callback below.
+    for (const piece of this.piecesById.values()) {
+      if (piece.material !== 'paper' || !piece.airborne || piece.settled) continue;
+      piece.flutterPhase += dt * PAPER_FLUTTER_FREQ_HZ * Math.PI * 2;
+      piece.body.addForce({ x: Math.sin(piece.flutterPhase) * PAPER_FLUTTER_FORCE_N, y: 0 }, true);
+      piece.body.addTorque(Math.sin(piece.flutterPhase * 0.6 + 1) * PAPER_FLUTTER_TORQUE, true);
     }
 
     const freezingNow = new Set<PieceRuntime>();
@@ -248,11 +319,21 @@ export class PieceManager {
       // guard matters, not just an optimization.
       if (p1 && !p1.settled) {
         this.frameForce.set(event.handle1, Math.max(this.frameForce.get(event.handle1) ?? 0, event.totalForceMagnitude));
+        this.frameDamageForce.set(
+          event.handle1,
+          Math.max(this.frameDamageForce.get(event.handle1) ?? 0, this.effectiveDamageForce(p1, p2?.material ?? null, event.totalForceMagnitude)),
+        );
+        this.landPiece(p1);
         if (p1.freeze?.phase === 'falling') freezingNow.add(p1);
         this.handleImpact(p1, p2 ? p2.material : null, event.totalForceMagnitude, approachSpeed);
       }
       if (p2 && !p2.settled) {
         this.frameForce.set(event.handle2, Math.max(this.frameForce.get(event.handle2) ?? 0, event.totalForceMagnitude));
+        this.frameDamageForce.set(
+          event.handle2,
+          Math.max(this.frameDamageForce.get(event.handle2) ?? 0, this.effectiveDamageForce(p2, p1?.material ?? null, event.totalForceMagnitude)),
+        );
+        this.landPiece(p2);
         if (p2.freeze?.phase === 'falling') freezingNow.add(p2);
         this.handleImpact(p2, p1 ? p1.material : null, event.totalForceMagnitude, approachSpeed);
       }
@@ -267,6 +348,7 @@ export class PieceManager {
 
     const fallen: PieceRuntime[] = [];
     const shattered: PieceRuntime[] = [];
+    const eaten: PieceRuntime[] = [];
     const seenIds = new Set<number>(); // a frozen ice piece maps several collider handles to the same PieceRuntime
 
     for (const piece of this.pieces.values()) {
@@ -274,7 +356,10 @@ export class PieceManager {
       seenIds.add(piece.id);
       if (piece.settled) continue; // fixed body: can't crack/shatter/wobble/fall any more
       if (piece.material === 'glass' && piece.glassState) {
-        const force = this.frameForce.get(piece.collider.handle) ?? 0;
+        // Damage-scaled, not raw: a steel attacker crosses these same
+        // crackForce/breakForce/loadLimit thresholds at a much lower raw
+        // force than a softer one (props.ts's damageFactor / GDD §2.0).
+        const force = this.frameDamageForce.get(piece.collider.handle) ?? 0;
         const wasCracked = piece.glassState.state === 'cracked';
         stepGlass(piece.glassState, force, dt, this.materials.glass.glass);
         if (piece.glassState.state === 'cracked' && !wasCracked) {
@@ -286,6 +371,22 @@ export class PieceManager {
           continue;
         }
       }
+      if (piece.material === 'polystyrene' && piece.squash) {
+        const force = this.frameDamageForce.get(piece.collider.handle) ?? 0;
+        const levelBefore = piece.squash.level;
+        stepSquash(piece.squash, force, dt, this.materials.polystyrene.squash);
+        if (piece.squash.level > levelBefore) this.applySquashStep(piece);
+      }
+      if (piece.worm) {
+        const levelBefore = piece.worm.level;
+        stepWorm(piece.worm, dt);
+        if (piece.worm.eaten) {
+          eaten.push(piece);
+          continue;
+        }
+        if (piece.worm.level > levelBefore) this.applyWormShrink(piece);
+      }
+      this.updateLivingLook(piece, dt);
       if (piece.jellySpring) {
         const { sx, sy } = stepJellySpring(piece.jellySpring, dt);
         piece.container.setScale(sx, sy);
@@ -295,12 +396,125 @@ export class PieceManager {
     }
 
     for (const piece of shattered) this.destroy(piece, 'shatter');
+    for (const piece of eaten) this.destroy(piece, 'eaten');
     for (const piece of fallen) {
       this.destroy(piece, 'fell');
       this.onFellOff(piece);
     }
 
     this.maintainPieceBudget();
+  }
+
+  /**
+   * Effective ("damage") force a contact deals to `receiver`, per GDD §2.0:
+   * scaled up by the *other* side's hardness (a steel attacker hits harder)
+   * and down by the receiver's own hardness/toughness (props.ts's
+   * damageFactor). `otherMaterial` is null when the other side of the
+   * contact isn't a tracked piece (e.g. resting directly on the static
+   * platform), which uses BASELINE_ATTACKER_HARDNESS — the same
+   * wood-equivalent assumption the original glass measurements were made
+   * under, so this is a no-op change for every pre-existing scenario.
+   */
+  private effectiveDamageForce(receiver: PieceRuntime, otherMaterial: MaterialId | null, rawForce: number): number {
+    const attackerHardness = otherMaterial ? this.materials[otherMaterial].props.hardness : BASELINE_ATTACKER_HARDNESS;
+    let receiverHardness = this.materials[receiver.material].props.hardness;
+    // A wormy wood piece gets structurally weaker as it's eaten (GDD §2.0) —
+    // scale its own hardness down by worm.ts's per-level fraction. Doesn't
+    // affect anything else's thresholds, only how *this* piece takes a hit.
+    if (receiver.worm) receiverHardness *= WORM_HARDNESS_FRACTIONS[receiver.worm.level];
+    return damageFactor(attackerHardness, receiverHardness, rawForce);
+  }
+
+  /** First-contact transition: switches a piece from its airborne linear damping to its (lower) resting one, so a landed polystyrene/paper stack settles and sleeps normally instead of feeling floaty forever (GDD §2.0). No-op past the first call. */
+  private landPiece(piece: PieceRuntime): void {
+    if (!piece.airborne) return;
+    piece.airborne = false;
+    piece.body.setLinearDamping(this.materials[piece.material].physics.restingLinearDamping);
+  }
+
+  /**
+   * Rebuilds a polystyrene piece's collider/graphics at its new, shorter
+   * squash height (SQUASH_HEIGHT_FRACTIONS[piece.squash.level] of its
+   * original baseHalfHM), keeping its *bottom* fixed against whatever it's
+   * resting on (the body's center moves down by exactly the height lost,
+   * so the top compresses down onto the support with no pop/jump).
+   */
+  private applySquashStep(piece: PieceRuntime): void {
+    if (!piece.squash) return;
+    const newHalfHM = piece.baseHalfHM * SQUASH_HEIGHT_FRACTIONS[piece.squash.level];
+    if (newHalfHM >= piece.halfHM) return; // already at/below this height (shouldn't happen — squash is monotonic)
+    const oldHalfHM = piece.halfHM;
+    const pos = piece.body.translation();
+    const material = this.materials[piece.material];
+
+    this.pieces.delete(piece.collider.handle);
+    this.rapierWorld.removeCollider(piece.collider);
+    const newCollider = this.rapierWorld.addBoxCollider(piece.body, material, 0, 0, piece.halfWM, newHalfHM);
+    // Bottom stays put: center moves down (y-down) by exactly the height lost.
+    piece.body.setTranslation({ x: pos.x, y: pos.y + (oldHalfHM - newHalfHM) }, true);
+
+    piece.collider = newCollider;
+    piece.halfHM = newHalfHM;
+    piece.topOffsetM = newHalfHM;
+    piece.hPx = newHalfHM * 2 * PX_PER_M;
+    this.pieces.set(newCollider.handle, piece);
+
+    drawPieceBase(piece.graphics, material, piece.wPx, piece.hPx, piece.id);
+    fxSquash(piece.container.x, piece.container.y);
+  }
+
+  /**
+   * Rebuilds a wormy wood piece's collider/graphics at its new, smaller
+   * worm-eaten size (WORM_SIZE_FRACTIONS[piece.worm.level] of its original
+   * baseHalfWM/baseHalfHM in both dimensions), keeping its *bottom* fixed
+   * against whatever it's resting on — same no-pop technique as
+   * applySquashStep, just shrinking width too (centered horizontally, which
+   * is purely cosmetic since it's symmetric).
+   */
+  private applyWormShrink(piece: PieceRuntime): void {
+    if (!piece.worm) return;
+    const fraction = WORM_SIZE_FRACTIONS[piece.worm.level];
+    const newHalfWM = piece.baseHalfWM * fraction;
+    const newHalfHM = piece.baseHalfHM * fraction;
+    if (newHalfHM >= piece.halfHM && newHalfWM >= piece.halfWM) return; // already at/below (shouldn't happen — worm level is monotonic)
+    const oldHalfHM = piece.halfHM;
+    const pos = piece.body.translation();
+    const material = this.materials[piece.material];
+
+    this.pieces.delete(piece.collider.handle);
+    this.rapierWorld.removeCollider(piece.collider);
+    const newCollider = this.rapierWorld.addBoxCollider(piece.body, material, 0, 0, newHalfWM, newHalfHM);
+    // Bottom stays put: center moves down (y-down) by exactly the height lost.
+    piece.body.setTranslation({ x: pos.x, y: pos.y + (oldHalfHM - newHalfHM) }, true);
+
+    piece.collider = newCollider;
+    piece.halfWM = newHalfWM;
+    piece.halfHM = newHalfHM;
+    piece.topOffsetM = newHalfHM;
+    piece.wPx = newHalfWM * 2 * PX_PER_M;
+    piece.hPx = newHalfHM * 2 * PX_PER_M;
+    this.pieces.set(newCollider.handle, piece);
+
+    drawPieceBase(piece.graphics, material, piece.wPx, piece.hPx, piece.id, piece.visualPhase);
+    drawWormHoles(piece.graphics, piece.wPx, piece.hPx, piece.worm.level, piece.id, piece.visualPhase);
+    fxMunch(piece.container.x, piece.container.y);
+  }
+
+  /**
+   * Advances and, at most every LIVING_LOOK_REDRAW_MS, redraws a jelly or
+   * wormy-wood piece's cheap cosmetic animation (drifting bubbles/bugs,
+   * a peeking worm — GDD §2.0). No-op for every other piece; deliberately
+   * NOT done every frame (see PieceRuntime.visualPhase's doc).
+   */
+  private updateLivingLook(piece: PieceRuntime, dt: number): void {
+    if (piece.material !== 'jelly' && !piece.worm) return;
+    const now = performance.now();
+    if (now < piece.nextVisualRedrawMs) return;
+    piece.nextVisualRedrawMs = now + LIVING_LOOK_REDRAW_MS;
+    piece.visualPhase += dt * 60 * (LIVING_LOOK_REDRAW_MS / 1000); // keep motion roughly frame-rate independent despite the coarse redraw cadence
+    const material = this.materials[piece.material];
+    drawPieceBase(piece.graphics, material, piece.wPx, piece.hPx, piece.id, piece.visualPhase);
+    if (piece.worm) drawWormHoles(piece.graphics, piece.wPx, piece.hPx, piece.worm.level, piece.id, piece.visualPhase);
   }
 
   private handleImpact(piece: PieceRuntime, otherMaterial: MaterialId | null, force: number, approachSpeed: number): void {

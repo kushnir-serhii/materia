@@ -173,7 +173,58 @@ export function playImpactSound(material: MaterialId, force: number): void {
       });
       break;
     }
+    case 'steel': {
+      // Metallic "clang" — a hard noise transient plus several inharmonic
+      // ringing partials that decay at different rates (a bell/metal-plate
+      // approximation cheap enough to synth per-hit).
+      const g = allocVoice(c, dest, volume, 0.9);
+      if (!g) return;
+      playNoise(c, g, t, 0.03, volume * 0.7, 'highpass', 2500, 1.2);
+      const partials = [1, 1.83, 2.41, 3.76, 5.1];
+      partials.forEach((mul, i) => {
+        playTone(c, g, t, 480 * pMul * mul, 0.55 - i * 0.06, volume * (0.5 / (i + 1)), 'sine');
+      });
+      break;
+    }
+    case 'polystyrene': {
+      // Soft squeak/crunch — a short filtered-noise burst with a rising chirp.
+      const g = allocVoice(c, dest, volume, 0.2);
+      if (!g) return;
+      playNoise(c, g, t, 0.12, volume * 0.6, 'bandpass', 1800 * pMul, 2.5);
+      const osc = playTone(c, g, t, 900 * pMul, 0.1, volume * 0.35, 'triangle');
+      osc.frequency.exponentialRampToValueAtTime(1400 * pMul, t + 0.08);
+      break;
+    }
+    case 'paper': {
+      // "Rustle" — filtered noise only, tiny and dry.
+      const g = allocVoice(c, dest, Math.min(volume, 0.4), 0.15);
+      if (!g) return;
+      playNoise(c, g, t, 0.13, Math.min(volume, 0.4), 'highpass', 2600, 0.9);
+      break;
+    }
   }
+}
+
+/** Short squish/crunch, played once per polystyrene compression step. */
+export function playSquashSound(): void {
+  if (!ctx || !masterGain || muted) return;
+  const c = ctx;
+  const g = allocVoice(c, masterGain, 0.5, 0.18);
+  if (!g) return;
+  const t = c.currentTime;
+  playNoise(c, g, t, 0.1, 0.5, 'lowpass', 1200, 1.5);
+  playNoise(c, g, t + 0.02, 0.08, 0.3, 'bandpass', 700, 2);
+}
+
+/** Quiet double-click "munch", played once per wormy-wood shrink step (GDD §2.0). */
+export function playMunchSound(): void {
+  if (!ctx || !masterGain || muted) return;
+  const c = ctx;
+  const g = allocVoice(c, masterGain, 0.3, 0.16);
+  if (!g) return;
+  const t = c.currentTime;
+  playNoise(c, g, t, 0.05, 0.3, 'bandpass', 500, 3);
+  playNoise(c, g, t + 0.07, 0.05, 0.22, 'bandpass', 420, 3);
 }
 
 /** Filtered noise swoosh, played when a freeze piece lands (before it freezes solid). */

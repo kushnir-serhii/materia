@@ -205,11 +205,24 @@ export class FreezeController {
       hPx,
       glassState: null,
       jellySpring: null,
+      squash: null,
+      baseHalfHM: (maxBottom - topY) / 2,
+      worm: null,
+      baseHalfWM: (x1 - x0) / 2,
+      visualPhase: 0,
+      nextVisualRedrawMs: 0,
+      flutterPhase: 0,
       lastImpactAt: 0,
       freeze: { phase: 'frozen', ageS: 0, joints: [], meltStepsDone: 0, rotationLocked: true, originXM, originYM, baseStrips: strips },
       extraColliderHandles: colliders.slice(1).map((c) => c.handle),
       spawnedAtMs: performance.now(),
       settled: false,
+      // A frozen ice body is placed already resting (its shape is built
+      // flush against whatever's below it), and its melt/settle logic is
+      // driven by ageS/phase, not this flag — but PieceManager's contact
+      // callback still sets it false the instant it registers its own
+      // first contact-force event, same as every other piece.
+      airborne: true,
     };
     for (const c of colliders) this.pm.pieces.set(c.handle, icePiece);
     this.pm.piecesById.set(icePiece.id, icePiece);

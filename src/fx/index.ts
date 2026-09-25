@@ -12,6 +12,8 @@ import {
   playSplashSound,
   playFreezeCrackleSound,
   playFreezeCrackSound,
+  playSquashSound,
+  playMunchSound,
   setMuted as setAudioMuted,
   isMuted as isAudioMuted,
 } from './audio';
@@ -152,4 +154,18 @@ export function fxFreezeCrack(xPx: number, yPx: number): void {
   playFreezeCrackSound();
   vibrate([10]);
   effects?.frost(xPx, yPx, 20, MATERIALS.freeze.freeze.iceColors.fill);
+}
+
+/** Called each time a polystyrene piece compresses one squash step (GDD §2.0). */
+export function fxSquash(xPx: number, yPx: number): void {
+  playSquashSound();
+  vibrate([12]);
+  effects?.dust(xPx, yPx, 3, MATERIALS.polystyrene.colors.stroke);
+}
+
+/** Called each time a wormy wood piece shrinks one step (GDD §2.0 — quiet munching sound + tiny haptic). */
+export function fxMunch(xPx: number, yPx: number): void {
+  playMunchSound();
+  vibrate([6]);
+  effects?.dust(xPx, yPx, 2, MATERIALS.wood.colors.stroke);
 }

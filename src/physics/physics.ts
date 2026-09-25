@@ -115,10 +115,14 @@ export class PhysicsWorld {
     // sustained-load rule (materials.ts / glass.ts) can see the load; Rapier
     // stops emitting force events once a body is asleep, so glass never sleeps.
     const canSleep = material.id !== 'glass';
+    // Every piece starts falling (airborne) — PieceManager switches it to
+    // restingLinearDamping the moment it first registers a contact (see its
+    // airborne/landed handling), so this initial value is always the
+    // airborne one.
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(x, y)
       .setRotation(angle)
-      .setLinearDamping(material.physics.linearDamping)
+      .setLinearDamping(material.physics.airborneLinearDamping)
       .setAngularDamping(material.physics.angularDamping)
       .setCanSleep(canSleep);
     const body = this.world.createRigidBody(bodyDesc);

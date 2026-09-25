@@ -17,7 +17,7 @@ interface SliderSpec {
 }
 
 const SLIDERS: SliderSpec[] = [
-  { label: 'density', get: (m) => m.physics.density, set: (m, v) => (m.physics.density = v), min: 0.1, max: 5, step: 0.05 },
+  { label: 'density', get: (m) => m.physics.density, set: (m, v) => (m.physics.density = v), min: 0.1, max: 6, step: 0.05 },
   { label: 'friction', get: (m) => m.physics.friction, set: (m, v) => (m.physics.friction = v), min: 0, max: 1.5, step: 0.02 },
   {
     label: 'restitution',

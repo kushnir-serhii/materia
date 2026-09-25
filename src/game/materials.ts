@@ -1,14 +1,33 @@
 // Material definitions — the only place physics/feel/glass values are tuned.
 // See docs/GDD.md §2 for the design intent behind these numbers.
+//
+// Every material's Rapier physics values are DERIVED from a small set of
+// designer-facing properties (GDD §2.0: Weight, Hardness, Grip, Bounce, Air
+// drag, each 0-10) via the pure, monotonic mapping functions in props.ts —
+// see physicsFromProps() below. Physics values are never hand-edited here
+// directly any more; to change a material's feel, change its props.
 
-export type MaterialId = 'wood' | 'stone' | 'jelly' | 'glass' | 'freeze';
+import {
+  type MaterialProps,
+  weightToDensity,
+  gripToFriction,
+  bounceToRestitution,
+  bounceToRestingDamping,
+  airDragToExtraDamping,
+} from './props';
+import type { SquashParams } from './squash';
+
+export type MaterialId = 'wood' | 'stone' | 'jelly' | 'glass' | 'steel' | 'polystyrene' | 'paper' | 'freeze';
 
 export interface MaterialPhysics {
   /** kg / m^2 (Rapier 2D uses area density) */
   density: number;
   friction: number;
   restitution: number;
-  linearDamping: number;
+  /** applied while a piece is airborne (before its first contact) — see PieceManager's airborne/resting damping switch. Equals restingLinearDamping + props.ts's airDragToExtraDamping(airDrag), so an airDrag=0 material (every material that existed before props.ts) falls exactly as it always did. */
+  airborneLinearDamping: number;
+  /** applied once a piece has landed/is resting — this is what the pre-props system's single `linearDamping` used to mean. */
+  restingLinearDamping: number;
   angularDamping: number;
 }
 
@@ -37,6 +56,13 @@ export interface MaterialFeel {
  *   already cracked -> shatter)
  * - load (a *sustained* contact force, not a spike) >= loadLimit continuously
  *   for loadTime seconds -> shatter, regardless of impact history
+ *
+ * Forces glass is checked against are first passed through props.ts's
+ * damageFactor(attackerHardness, glass.props.hardness, rawForce) — see
+ * PieceManager — so these thresholds are unchanged ("stay as measured") but
+ * a harder attacker (steel) crosses them at a much lower raw force than a
+ * softer one (jelly), without glass.ts itself knowing about materials at
+ * all.
  */
 export interface GlassParams {
   crackForce: number;
@@ -66,17 +92,52 @@ export interface FreezeParams {
   iceColors: MaterialColors;
 }
 
+/** Plank shape, meters. Most materials share PLANK_SIZE; paper is a thin sheet (GDD §2: "2.0 x 0.15 m"). */
+export interface MaterialSize {
+  width: number;
+  height: number;
+}
+
 export interface Material {
   id: MaterialId;
+  props: MaterialProps;
   physics: MaterialPhysics;
+  size: MaterialSize;
   colors: MaterialColors;
   feel: MaterialFeel;
   /** only meaningful for id === 'glass', but present on every entry so code
    *  can read `MATERIALS[id].glass` without a type guard when it only cares
    *  about glass. Non-glass materials carry the same numbers unused. */
   glass: GlassParams;
+  /** only meaningful for id === 'polystyrene' — see squash.ts. Present on every entry for the same reason as `glass`. */
+  squash: SquashParams;
   /** only meaningful for id === 'freeze', see FreezeParams. */
   freeze: FreezeParams;
+}
+
+/** Base plank shape, meters. */
+export const PLANK_SIZE: MaterialSize = { width: 2.0, height: 0.6 };
+/** Paper's thin-sheet shape, meters (GDD §2). */
+export const PAPER_SIZE: MaterialSize = { width: 2.0, height: 0.15 };
+
+/**
+ * Turns a material's designer-facing props into its Rapier physics values —
+ * the single place density/friction/restitution/damping are computed. See
+ * props.ts for the (monotonic, unit-tested) mapping functions themselves.
+ */
+function physicsFromProps(props: MaterialProps): MaterialPhysics {
+  const restingLinearDamping = bounceToRestingDamping(props.bounce);
+  return {
+    density: weightToDensity(props.weight),
+    friction: gripToFriction(props.grip),
+    restitution: bounceToRestitution(props.bounce),
+    restingLinearDamping,
+    // A bouncier material also gets a touch more angular damping for the
+    // same anti-jitter reason as its resting linear damping (see
+    // props.ts's bounceToRestingDamping doc).
+    angularDamping: restingLinearDamping,
+    airborneLinearDamping: restingLinearDamping + airDragToExtraDamping(props.airDrag),
+  };
 }
 
 /*
@@ -88,7 +149,9 @@ export interface Material {
  *   - forces read from TempContactForceEvent.totalForceMagnitude() on the
  *     glass collider only, over a 2-3s simulation at 1/60s fixed step
  *
- * Measured (glass plank in every case):
+ * Measured (glass plank in every case, wood/stone attacker — i.e. before
+ * props.ts's damageFactor scaling, which is applied on top at the call
+ * site and cancels out to ~1x for a wood-hardness attacker on glass):
  *   A. glass resting under 1 wood plank (no drop, just settling): peak ~34 N,
  *      steady-state (post-settle, pre-sleep) support force ~34 N.
  *      -> MUST NOT crack or shatter.
@@ -101,7 +164,9 @@ export interface Material {
  *   D. a stone plank dropped from 3m above the glass: impact peak ~1932 N.
  *      -> MUST shatter immediately.
  *
- * Chosen thresholds (comfortably separate all four cases):
+ * Chosen thresholds (comfortably separate all four cases; stay as measured
+ * per the round-8 task — only the *force* they're compared against changed,
+ * via damageFactor, not these numbers):
  *   crackForce = 300 N   (113 < 300 < 553: only the wood drop cracks it)
  *   breakForce = 1000 N  (553 < 1000 < 1932: only the stone drop shatters it)
  *   loadLimit  = 70 N    (34 < 70 < 99: only the 2-stone stack accumulates load)
@@ -112,6 +177,22 @@ const GLASS_PARAMS: GlassParams = {
   breakForce: 1000,
   loadLimit: 70,
   loadTime: 0.5,
+};
+
+/**
+ * Polystyrene-only squash tuning (GDD §2.0/§2). `force` stepSquash sees is
+ * already damage-scaled (props.ts's damageFactor, attacker hardness vs
+ * polystyrene's own H2 toughness — see PieceManager), so these numbers sit
+ * in roughly the same range as glass's thresholds above rather than needing
+ * their own separate physical-force measurement: a resting wood/jelly plank
+ * stays well under loadLimit indefinitely, a resting stone (or a stack of
+ * a few) crosses it within loadTime, and any solid drop-impact (stone
+ * especially) advances a step immediately via impactForce.
+ */
+const POLYSTYRENE_SQUASH_PARAMS: SquashParams = {
+  impactForce: 220,
+  loadLimit: 85,
+  loadTime: 0.35,
 };
 
 /*
@@ -135,16 +216,24 @@ const FREEZE_PARAMS: FreezeParams = {
   },
 };
 
+/** Props per GDD §2.0's material table — the only per-material "physics tuning" left; everything in `physics` is derived from these via physicsFromProps(). */
+const PROPS: Record<MaterialId, MaterialProps> = {
+  wood: { weight: 3, hardness: 5, grip: 6, bounce: 1, airDrag: 0 },
+  stone: { weight: 7, hardness: 8, grip: 8, bounce: 0, airDrag: 0 },
+  steel: { weight: 10, hardness: 10, grip: 3, bounce: 1, airDrag: 0 },
+  jelly: { weight: 3, hardness: 1, grip: 9, bounce: 6, airDrag: 0 },
+  glass: { weight: 5, hardness: 3, grip: 3, bounce: 1, airDrag: 0 },
+  polystyrene: { weight: 1, hardness: 2, grip: 5, bounce: 2, airDrag: 5 },
+  paper: { weight: 0.5, hardness: 1, grip: 6, bounce: 0, airDrag: 9 },
+  freeze: { weight: 3, hardness: 6, grip: 5, bounce: 0, airDrag: 0 },
+};
+
 export const MATERIALS: Record<MaterialId, Material> = {
   wood: {
     id: 'wood',
-    physics: {
-      density: 0.8,
-      friction: 0.6,
-      restitution: 0.1,
-      linearDamping: 0.05,
-      angularDamping: 0.05,
-    },
+    props: PROPS.wood,
+    physics: physicsFromProps(PROPS.wood),
+    size: PLANK_SIZE,
     colors: {
       fill: 0x8a5a34,
       stroke: 0x5c3a1e,
@@ -155,17 +244,14 @@ export const MATERIALS: Record<MaterialId, Material> = {
       shake: 0.15,
     },
     glass: GLASS_PARAMS,
+    squash: POLYSTYRENE_SQUASH_PARAMS,
     freeze: FREEZE_PARAMS,
   },
   stone: {
     id: 'stone',
-    physics: {
-      density: 2.6,
-      friction: 0.8,
-      restitution: 0.02,
-      linearDamping: 0.1,
-      angularDamping: 0.1,
-    },
+    props: PROPS.stone,
+    physics: physicsFromProps(PROPS.stone),
+    size: PLANK_SIZE,
     colors: {
       fill: 0x8c8c8c,
       stroke: 0x555555,
@@ -176,29 +262,38 @@ export const MATERIALS: Record<MaterialId, Material> = {
       shake: 0.6,
     },
     glass: GLASS_PARAMS,
+    squash: POLYSTYRENE_SQUASH_PARAMS,
+    freeze: FREEZE_PARAMS,
+  },
+  steel: {
+    id: 'steel',
+    props: PROPS.steel,
+    physics: physicsFromProps(PROPS.steel),
+    size: PLANK_SIZE,
+    colors: {
+      // Brushed grey-blue.
+      fill: 0x7b8794,
+      stroke: 0x4a5568,
+    },
+    feel: {
+      sound: 'steel',
+      vibrate: [55],
+      // Max shake — GDD: "big camera shake" (materials.test.ts caps shake at 1).
+      shake: 1,
+    },
+    glass: GLASS_PARAMS,
+    squash: POLYSTYRENE_SQUASH_PARAMS,
     freeze: FREEZE_PARAMS,
   },
   jelly: {
     id: 'jelly',
-    physics: {
-      density: 0.9,
-      friction: 0.9,
-      restitution: 0.55,
-      // Much higher than the other materials (0.02): a high-restitution body
-      // left undamped keeps re-energizing itself on every tiny resting
-      // micro-bounce against a neighbour (worst with several jellies stacked
-      // together) and never reaches Rapier's sleep threshold. This damping
-      // only bleeds velocity *between* bounces — the squash/wobble visual
-      // and the sound/haptic on a real impact are untouched — but lets a
-      // jelly pile actually settle and sleep within a few seconds instead of
-      // jittering (and re-triggering fx) indefinitely. See PieceManager's
-      // IMPACT_MIN_SPEED_MPS for the other half of that fix.
-      linearDamping: 0.4,
-      angularDamping: 0.4,
-    },
+    props: PROPS.jelly,
+    physics: physicsFromProps(PROPS.jelly),
+    size: PLANK_SIZE,
     colors: {
-      fill: 0xff6fb1,
-      stroke: 0xd1408a,
+      // Green (GDD §2.0 "Looks & living details" — was pink).
+      fill: 0x6fd15a,
+      stroke: 0x2f8a1e,
     },
     feel: {
       sound: 'jelly',
@@ -206,17 +301,14 @@ export const MATERIALS: Record<MaterialId, Material> = {
       shake: 0.1,
     },
     glass: GLASS_PARAMS,
+    squash: POLYSTYRENE_SQUASH_PARAMS,
     freeze: FREEZE_PARAMS,
   },
   glass: {
     id: 'glass',
-    physics: {
-      density: 1.5,
-      friction: 0.25,
-      restitution: 0.15,
-      linearDamping: 0.02,
-      angularDamping: 0.02,
-    },
+    props: PROPS.glass,
+    physics: physicsFromProps(PROPS.glass),
+    size: PLANK_SIZE,
     colors: {
       fill: 0xbfe8f0,
       stroke: 0x7fc4d6,
@@ -227,17 +319,52 @@ export const MATERIALS: Record<MaterialId, Material> = {
       shake: 0.25,
     },
     glass: GLASS_PARAMS,
+    squash: POLYSTYRENE_SQUASH_PARAMS,
+    freeze: FREEZE_PARAMS,
+  },
+  polystyrene: {
+    id: 'polystyrene',
+    props: PROPS.polystyrene,
+    physics: physicsFromProps(PROPS.polystyrene),
+    size: PLANK_SIZE,
+    colors: {
+      // Bright white with a faint warm-grey line/dot texture (pieceView.ts).
+      fill: 0xf5f5f0,
+      stroke: 0xc9c9c0,
+    },
+    feel: {
+      sound: 'polystyrene',
+      vibrate: [12],
+      shake: 0.05,
+    },
+    glass: GLASS_PARAMS,
+    squash: POLYSTYRENE_SQUASH_PARAMS,
+    freeze: FREEZE_PARAMS,
+  },
+  paper: {
+    id: 'paper',
+    props: PROPS.paper,
+    physics: physicsFromProps(PROPS.paper),
+    size: PAPER_SIZE,
+    colors: {
+      // Off-white with faint lines (pieceView.ts).
+      fill: 0xf3ead9,
+      stroke: 0xd8cbb0,
+    },
+    feel: {
+      sound: 'paper',
+      vibrate: [8],
+      shake: 0,
+    },
+    glass: GLASS_PARAMS,
+    squash: POLYSTYRENE_SQUASH_PARAMS,
     freeze: FREEZE_PARAMS,
   },
   freeze: {
     id: 'freeze',
-    physics: {
-      density: 0.9,
-      friction: 0.5,
-      restitution: 0,
-      linearDamping: 0.02,
-      angularDamping: 0.02,
-    },
+    props: PROPS.freeze,
+    physics: physicsFromProps(PROPS.freeze),
+    size: PLANK_SIZE,
     // Water-blue translucent while falling/unfrozen; freeze.iceColors is the
     // pale icy look used once it lands and freezes (see FreezeController).
     colors: {
@@ -250,6 +377,7 @@ export const MATERIALS: Record<MaterialId, Material> = {
       shake: 0,
     },
     glass: GLASS_PARAMS,
+    squash: POLYSTYRENE_SQUASH_PARAMS,
     freeze: FREEZE_PARAMS,
   },
 };
@@ -257,13 +385,10 @@ export const MATERIALS: Record<MaterialId, Material> = {
 /** Ids in the normal random hook rotation. `freeze` is deliberately excluded
  *  here (GDD §2.1: spawned ~1 in 10 pieces, never as a plain rotation slot)
  *  — see ALL_MATERIAL_IDS for the full set including it. */
-export const MATERIAL_IDS: MaterialId[] = ['wood', 'stone', 'jelly', 'glass'];
+export const MATERIAL_IDS: MaterialId[] = ['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'paper'];
 
 /** Every material id, including the freeze special. */
 export const ALL_MATERIAL_IDS: MaterialId[] = [...MATERIAL_IDS, 'freeze'];
-
-/** Base plank shape, meters. */
-export const PLANK_SIZE = { width: 2.0, height: 0.6 };
 
 /**
  * A deep, independent copy of MATERIALS for the `?debug=1` tuning panel to
@@ -277,10 +402,13 @@ export function cloneMaterialsForRuntime(): Record<MaterialId, Material> {
     const m = MATERIALS[id];
     clone[id] = {
       id: m.id,
+      props: { ...m.props },
       physics: { ...m.physics },
+      size: { ...m.size },
       colors: { ...m.colors },
       feel: { ...m.feel, vibrate: [...m.feel.vibrate] },
       glass: { ...m.glass },
+      squash: { ...m.squash },
       freeze: { ...m.freeze, iceColors: { ...m.freeze.iceColors } },
     };
   }

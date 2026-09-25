@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { PX_PER_M } from '../physics/physics';
-import { MATERIALS, MATERIAL_IDS, PLANK_SIZE, cloneMaterialsForRuntime, type Material, type MaterialId } from '../game/materials';
-import { drawPieceBase } from '../ui/pieceView';
+import { MATERIALS, MATERIAL_IDS, ALL_MATERIAL_IDS, cloneMaterialsForRuntime, type Material, type MaterialId } from '../game/materials';
+import { drawPieceBase, drawWormHoles } from '../ui/pieceView';
 import { drawBackground } from '../ui/background';
 import { Hud } from '../ui/hud';
 import { DebugPanel } from '../ui/debugPanel';
@@ -40,6 +40,8 @@ function isDebugBuild(): boolean {
 
 /** GDD §2.1: freeze is never a plain rotation slot, it's a ~1-in-10 special roll. */
 const FREEZE_SPAWN_CHANCE = 0.1;
+/** GDD §2.0: ~1 in 6 wood pieces spawn as a "wormy" variant — matches PieceManager's own WORMY_WOOD_CHANCE fallback (spawn() is always told explicitly here, but keeping the hook preview's own roll in sync avoids ever needing to reconcile two different chances). */
+const WORMY_WOOD_HOOK_CHANCE = 1 / 6;
 
 function randomMaterial(): MaterialId {
   if (Math.random() < FREEZE_SPAWN_CHANCE) return 'freeze';
@@ -78,6 +80,19 @@ const VIEW_TOP_FRACTION = 0.4;
  *  bar) between the platform's bottom edge and the screen's bottom edge
  *  whenever there's no tall tower pushing the view up. */
 const PLATFORM_BOTTOM_MARGIN_PX = 60;
+/** Height HUD stability (playtest: "numbers very often changing"). The
+ *  displayed height only moves once the raw measured height has held
+ *  HEIGHT_DISPLAY_STABLE_S seconds within HEIGHT_DISPLAY_NOISE_M of a new
+ *  value, and only then if that new value is at least
+ *  HEIGHT_DISPLAY_MIN_DELTA_M away from what's currently shown — see
+ *  updateDisplayedHeight(). */
+const HEIGHT_DISPLAY_MIN_DELTA_M = 0.1;
+const HEIGHT_DISPLAY_STABLE_S = 0.3;
+/** Raw-height wobble smaller than this doesn't reset the "how long has it
+ *  been stable" timer — otherwise frame-to-frame floating point/physics
+ *  noise (a piece's resting classification flickering) would never let the
+ *  timer accumulate at all. */
+const HEIGHT_DISPLAY_NOISE_M = 0.03;
 
 declare global {
   interface Window {
@@ -89,7 +104,7 @@ declare global {
       height: () => number;
       reset: () => void;
       stepFast: (seconds: number) => void;
-      spawn: (material: MaterialId, xMeters: number, yMeters: number) => void;
+      spawn: (material: MaterialId, xMeters: number, yMeters: number) => number | null;
       jointCount: () => number;
       freezeTopFlatness: () => number;
       freezeAngleDeg: () => number;
@@ -110,6 +125,8 @@ declare global {
       hudWrenchCenter: () => { x: number; y: number };
       /** Whether the dev material-picker panel is currently open. */
       hudDevPanelOpen: () => boolean;
+      /** The dev panel's props text line for the currently selected material, e.g. "Steel · W10 H10 G3 B1 D0". */
+      hudDevPropsLine: () => string;
       /** Last MAX_REMOVAL_LOG piece removals (id/material/reason/ageMs/at), oldest first — see PieceManager.removals(). */
       removals: () => RemovalRecord[];
       /** id of the most recently successfully dropped piece, or null if none yet — pair with pieceExists()/removals() to check a drop actually survives. */
@@ -120,6 +137,11 @@ declare global {
       dynamicPieceCount: () => number;
       /** Number of pieces the piece-budget settle policy has converted to fixed bodies (kept for visuals, no longer simulated). */
       settledPieceCount: () => number;
+      /** The height HUD's actual displayed value (post-hysteresis — see updateDisplayedHeight), distinct from height() which is the raw measured value. */
+      displayedHeight: () => number;
+      squashLevel: (id: number) => number | null;
+      hookDirection: () => number;
+      spawnWormy: (xMeters: number, yMeters: number) => number | null;
     };
   }
 }
@@ -141,7 +163,13 @@ export class GameScene extends Phaser.Scene {
   private hookSwingSpeed = HOOK_BASE_SPEED;
   private hookX = 0;
   private hookCenterXM = 0;
+  /** +1 = swinging right first, -1 = left first — flipped every spawnHookPreview() so each new piece starts opposite the previous one (GDD "Hook movement"). Starts at -1 so the very first piece flips to +1 (right), matching the old always-right behaviour. */
+  private hookDirection = -1;
   private pendingOverride: MaterialId | null = null;
+  /** True while the hook is carrying a wormy wood variant (GDD §2.0 — see forceWormyWood/spawnHookPreview). Only meaningful when hookMaterial === 'wood'. */
+  private hookWormy = false;
+  /** Set by forceWormyWood() when tapped mid-cooldown; consumed (and cleared) by the next spawnHookPreview(). */
+  private pendingWormyOverride: boolean | null = null;
 
   private cooldownRemaining = 0;
   /** id of the most recently successfully dropped piece — test hook only (fuzz's "did my drop survive" check). */
@@ -150,6 +178,16 @@ export class GameScene extends Phaser.Scene {
   private gameOver = false;
   private currentHeightM = 0;
   private bestHeightM = 0;
+  /** What the HUD actually shows — see updateDisplayedHeight(). Deliberately
+   *  decoupled from currentHeightM (the real, raw measured height, used for
+   *  bestHeightM/scoring) so the number doesn't visibly jitter every time a
+   *  piece's "is it resting" classification flickers for a frame or two
+   *  (e.g. a jelly settling/wobbling near SLOW_VELOCITY_THRESHOLD). */
+  private displayedHeightM = 0;
+  /** The raw height value updateDisplayedHeight is currently "watching" — reset every time currentHeightM moves more than HEIGHT_DISPLAY_NOISE_M away from it. */
+  private pendingHeightM = 0;
+  /** How long pendingHeightM has held steady (within HEIGHT_DISPLAY_NOISE_M). */
+  private pendingHeightSinceS = 0;
 
   private initialScrollY = 0;
   private camScrollY = 0;
@@ -242,6 +280,7 @@ export class GameScene extends Phaser.Scene {
       () => this.toggleMute(),
       () => this.toggleVibration(),
       this.debug,
+      () => this.forceWormyWood(),
     );
     this.hud.setBest(this.bestHeightM);
     this.hud.setMuted(isMuted());
@@ -271,11 +310,13 @@ export class GameScene extends Phaser.Scene {
       if (this.gameOver) this.doReset();
       else this.drop();
     });
-    this.input.keyboard?.on('keydown-ONE', () => this.forceMaterial('wood'));
-    this.input.keyboard?.on('keydown-TWO', () => this.forceMaterial('stone'));
-    this.input.keyboard?.on('keydown-THREE', () => this.forceMaterial('jelly'));
-    this.input.keyboard?.on('keydown-FOUR', () => this.forceMaterial('glass'));
-    this.input.keyboard?.on('keydown-FIVE', () => this.forceMaterial('freeze'));
+    // Dev-picker keys 1-8, in the same order as its 8 swatches
+    // (ALL_MATERIAL_IDS: wood/stone/jelly/glass/steel/polystyrene/paper,
+    // freeze last — see hud.ts).
+    const KEY_NAMES = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT'];
+    ALL_MATERIAL_IDS.forEach((id, i) => {
+      this.input.keyboard?.on(`keydown-${KEY_NAMES[i]}`, () => this.forceMaterial(id));
+    });
     this.input.keyboard?.on('keydown-R', () => this.doReset());
   }
 
@@ -306,7 +347,10 @@ export class GameScene extends Phaser.Scene {
         for (let i = 0; i < steps; i++) this.safeFrameTick(1 / 60);
       },
       spawn: (material, xMeters, yMeters) => {
-        this.pieceManager.spawn(material, xMeters, yMeters);
+        return this.pieceManager.spawn(material, xMeters, yMeters)?.id ?? null;
+      },
+      spawnWormy: (xMeters, yMeters) => {
+        return this.pieceManager.spawn('wood', xMeters, yMeters, true)?.id ?? null;
       },
       jointCount: () => this.pieceManager.freezeController.jointCount(),
       freezeTopFlatness: () => this.pieceManager.freezeController.topFlatness(),
@@ -322,11 +366,15 @@ export class GameScene extends Phaser.Scene {
       allSleeping: () => this.pieceManager.allSleeping(),
       hudWrenchCenter: () => this.hud.wrenchCenter(),
       hudDevPanelOpen: () => this.hud.isDevPanelOpen(),
+      hudDevPropsLine: () => this.hud.devPropsLine(),
       removals: () => this.pieceManager.removals(),
       lastDroppedPieceId: () => this.lastDroppedId,
       pieceExists: (id) => this.pieceManager.piecesById.has(id),
       dynamicPieceCount: () => this.pieceManager.dynamicPieceCount(),
       settledPieceCount: () => this.pieceManager.settledPieceCount(),
+      displayedHeight: () => this.displayedHeightM,
+      squashLevel: (id) => this.pieceManager.piecesById.get(id)?.squash?.level ?? null,
+      hookDirection: () => this.hookDirection,
     };
   }
 
@@ -377,17 +425,18 @@ export class GameScene extends Phaser.Scene {
       if (this.cooldownRemaining === 0) this.spawnHookPreview();
     } else {
       this.hookPhase += dt * this.hookSwingSpeed;
-      this.hookX = this.hookCenterXM + Math.sin(this.hookPhase) * HOOK_AMPLITUDE_M;
+      this.hookX = this.hookCenterXM + Math.sin(this.hookPhase) * HOOK_AMPLITUDE_M * this.hookDirection;
     }
 
     const physicsDt = consumeHitStopDt(dt);
     this.pieceManager.step(physicsDt, this.platformTopY + FAIL_MARGIN_M);
     updateEffects(dt);
     this.updateCamera(dt);
+    this.updateDisplayedHeight(dt);
     this.pieceManager.syncRender();
     this.syncHook();
 
-    this.hud.setHeight(this.currentHeightM);
+    this.hud.setHeight(this.displayedHeightM);
     this.hud.setBest(this.bestHeightM);
     this.hud.setHearts(this.hearts, HEARTS_MAX);
     if (this.debug) this.hud.setDebugStats(this.game.loop.actualFps, this.pieceManager.pieces.size);
@@ -488,6 +537,28 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Updates displayedHeightM from the raw currentHeightM with hysteresis
+   * (see the HEIGHT_DISPLAY_* constants) so the HUD number reads as a
+   * series of deliberate steps instead of jittering every frame a piece's
+   * "resting" classification flickers.
+   */
+  private updateDisplayedHeight(dt: number): void {
+    const raw = this.currentHeightM;
+    if (Math.abs(raw - this.pendingHeightM) > HEIGHT_DISPLAY_NOISE_M) {
+      this.pendingHeightM = raw;
+      this.pendingHeightSinceS = 0;
+    } else {
+      this.pendingHeightSinceS += dt;
+    }
+    if (
+      Math.abs(this.pendingHeightM - this.displayedHeightM) >= HEIGHT_DISPLAY_MIN_DELTA_M &&
+      this.pendingHeightSinceS >= HEIGHT_DISPLAY_STABLE_S
+    ) {
+      this.displayedHeightM = this.pendingHeightM;
+    }
+  }
+
   private syncHook(): void {
     if (this.cooldownRemaining <= 0) {
       this.hookContainer.setVisible(true);
@@ -500,29 +571,54 @@ export class GameScene extends Phaser.Scene {
 
   private spawnHookPreview(): void {
     const material = this.pendingOverride ?? this.nextMaterial;
+    // A forced wormy override always wins; otherwise a plain wood pick
+    // rolls its own ~1-in-6 chance here (so the hook's visual — worm holes
+    // or not — always matches what spawn() will actually create) — every
+    // other material is never wormy.
+    const wormy =
+      this.pendingWormyOverride ?? (material === 'wood' ? Math.random() < WORMY_WOOD_HOOK_CHANCE : false);
     this.pendingOverride = null;
-    this.setHookMaterial(material);
+    this.pendingWormyOverride = null;
+    this.setHookMaterial(material, wormy);
     this.nextMaterial = randomMaterial();
     this.hud.setNextMaterial(this.nextMaterial);
     this.hookPhase = 0;
     this.hookX = this.hookCenterXM;
+    this.hookDirection = -this.hookDirection; // alternate: opposite of the previous piece's starting direction
     this.hookSwingSpeed = Math.min(
       HOOK_SPEED_MAX,
       HOOK_BASE_SPEED + this.currentHeightM * HOOK_SPEED_HEIGHT_FACTOR,
     );
   }
 
-  private setHookMaterial(id: MaterialId): void {
+  private setHookMaterial(id: MaterialId, wormy = false): void {
     this.hookMaterial = id;
-    const wPx = PLANK_SIZE.width * PX_PER_M;
-    const hPx = PLANK_SIZE.height * PX_PER_M;
-    drawPieceBase(this.hookGraphics, this.materials[id], wPx, hPx, Date.now() % 1000);
+    this.hookWormy = id === 'wood' && wormy;
+    const size = this.materials[id].size;
+    const wPx = size.width * PX_PER_M;
+    const hPx = size.height * PX_PER_M;
+    const seed = Date.now() % 1000;
+    drawPieceBase(this.hookGraphics, this.materials[id], wPx, hPx, seed);
+    if (this.hookWormy) drawWormHoles(this.hookGraphics, wPx, hPx, 0, seed, 0);
     this.hud.setSelectedMaterial(id);
+    this.hud.setWormySelected(this.hookWormy);
   }
 
   private forceMaterial(id: MaterialId): void {
     if (this.cooldownRemaining <= 0) this.setHookMaterial(id);
-    else this.pendingOverride = id;
+    else {
+      this.pendingOverride = id;
+      this.pendingWormyOverride = false;
+    }
+  }
+
+  /** Dev-picker "Wormy" swatch: forces the next piece to be wood, and wormy. */
+  private forceWormyWood(): void {
+    if (this.cooldownRemaining <= 0) this.setHookMaterial('wood', true);
+    else {
+      this.pendingOverride = 'wood';
+      this.pendingWormyOverride = true;
+    }
   }
 
   drop(): boolean {
@@ -534,7 +630,15 @@ export class GameScene extends Phaser.Scene {
     // defensive guard: if spawn() ever legitimately returns null again in
     // the future, a tap must never silently start a cooldown for a piece
     // that doesn't exist.
-    const piece = this.pieceManager.spawn(this.hookMaterial, this.hookX, yM);
+    // hookWormy is passed through explicitly (never left for spawn() to
+    // re-roll) so the piece that's actually created always matches what the
+    // hook's preview graphics just showed the player.
+    const piece = this.pieceManager.spawn(
+      this.hookMaterial,
+      this.hookX,
+      yM,
+      this.hookMaterial === 'wood' ? this.hookWormy : undefined,
+    );
     if (!piece) return false;
     this.lastDroppedId = piece.id;
     this.cooldownRemaining = DROP_COOLDOWN_S;
@@ -561,7 +665,11 @@ export class GameScene extends Phaser.Scene {
     this.cameraGoingDown = false;
     this.hadTower = false;
     this.currentHeightM = 0;
+    this.displayedHeightM = 0;
+    this.pendingHeightM = 0;
+    this.pendingHeightSinceS = 0;
     this.pendingOverride = null;
+    this.pendingWormyOverride = null;
     this.lastDroppedId = null;
     this.nextMaterial = randomMaterial();
     this.spawnHookPreview();

@@ -5,8 +5,8 @@
 
 import Phaser from 'phaser';
 import { MATERIALS, ALL_MATERIAL_IDS, type MaterialId } from '../game/materials';
-import { drawPieceBase } from './pieceView';
-import { DEV_PICKER_LAYOUT } from './devPickerLayout';
+import { drawPieceBase, drawWormHoles } from './pieceView';
+import { DEV_PICKER_LAYOUT, WORMY_SWATCH_INDEX } from './devPickerLayout';
 
 export { DEV_PICKER_LAYOUT };
 
@@ -28,6 +28,9 @@ const MATERIAL_NAMES: Record<MaterialId, string> = {
   stone: 'Stone',
   jelly: 'Jelly',
   glass: 'Glass',
+  steel: 'Steel',
+  polystyrene: 'Polystyrene',
+  paper: 'Paper',
   freeze: 'Freeze',
 };
 
@@ -43,7 +46,10 @@ export class Hud {
   private wrenchButton: Phaser.GameObjects.Text;
   private devPanel: Phaser.GameObjects.Container;
   private devPanelBg: Phaser.GameObjects.Rectangle;
+  private devPropsText: Phaser.GameObjects.Text;
   private devSwatches = {} as Record<MaterialId, Phaser.GameObjects.Rectangle>;
+  private wormySwatch!: Phaser.GameObjects.Rectangle;
+  private wormySelected = false;
   private devPanelOpen = false;
   private overlay: Phaser.GameObjects.Container;
   private overlayText: Phaser.GameObjects.Text;
@@ -60,6 +66,7 @@ export class Hud {
     onToggleMute: () => void,
     onToggleVibration: () => void,
     debug: boolean,
+    onPickWormy: () => void = () => {},
   ) {
     this.scene = scene;
     this.heightText = scene.add
@@ -119,14 +126,17 @@ export class Hud {
     this.wrenchButton.on('pointerdown', () => this.toggleDevPanel());
 
     this.devPanel = scene.add.container(0, 0).setScrollFactor(0).setDepth(100).setVisible(false);
-    const totalW = ALL_MATERIAL_IDS.length * SWATCH_SIZE + (ALL_MATERIAL_IDS.length - 1) * SWATCH_GAP;
+    const gridW = DEV_PICKER_LAYOUT.gridW;
+    const gridH = DEV_PICKER_LAYOUT.gridH;
+    const panelH = gridH + 10 + DEV_PICKER_LAYOUT.propsLineH;
     this.devPanelBg = scene.add
-      .rectangle(PANEL_RIGHT_X - totalW / 2, PANEL_TOP_Y + SWATCH_SIZE / 2, totalW + 12, SWATCH_SIZE + 10, 0x14161c, 0.85)
+      .rectangle(PANEL_RIGHT_X - gridW / 2, PANEL_TOP_Y + panelH / 2 - 5, gridW + 12, panelH, 0x14161c, 0.85)
       .setStrokeStyle(1, 0x3a3f4a)
       .setScrollFactor(0);
     this.devPanel.add(this.devPanelBg);
     ALL_MATERIAL_IDS.forEach((id, i) => {
       const cx = DEV_PICKER_LAYOUT.swatchCenterX(i);
+      const cy = DEV_PICKER_LAYOUT.swatchCenterY(i);
       const material = MATERIALS[id];
       // Interactive children of a scrollFactor(0) container must set their
       // *own* scrollFactor(0) too — Phaser's input hit-testing reads each
@@ -135,18 +145,50 @@ export class Hud {
       // this the swatch's hit area silently drifts by the camera's current
       // scroll and taps stop landing on it once the camera has moved.
       const bg = scene.add
-        .rectangle(cx, DEV_PICKER_LAYOUT.swatchCenterY, SWATCH_SIZE, SWATCH_SIZE, material.colors.fill, 0.9)
+        .rectangle(cx, cy, SWATCH_SIZE, SWATCH_SIZE, material.colors.fill, 0.9)
         .setStrokeStyle(2, material.colors.stroke)
         .setScrollFactor(0)
         .setInteractive({ useHandCursor: true });
       bg.on('pointerdown', () => onPickMaterial(id));
       this.devSwatches[id] = bg;
       const label = scene.add
-        .text(cx, DEV_PICKER_LAYOUT.swatchCenterY, `${i + 1}`, { fontSize: '10px', color: '#101010', fontStyle: 'bold' })
+        .text(cx, cy, `${i + 1}`, { fontSize: '10px', color: '#101010', fontStyle: 'bold' })
         .setOrigin(0.5)
         .setScrollFactor(0);
       this.devPanel.add([bg, label]);
     });
+
+    // Extra "Wormy" swatch (forces the next piece to a wormy wood variant —
+    // GDD §2.0) — wood-colored with a worm-hole overlay so it reads
+    // distinctly from the plain wood swatch.
+    {
+      const cx = DEV_PICKER_LAYOUT.swatchCenterX(WORMY_SWATCH_INDEX);
+      const cy = DEV_PICKER_LAYOUT.swatchCenterY(WORMY_SWATCH_INDEX);
+      const wood = MATERIALS.wood;
+      this.wormySwatch = scene.add
+        .rectangle(cx, cy, SWATCH_SIZE, SWATCH_SIZE, wood.colors.fill, 0.9)
+        .setStrokeStyle(2, wood.colors.stroke)
+        .setScrollFactor(0)
+        .setInteractive({ useHandCursor: true });
+      this.wormySwatch.on('pointerdown', onPickWormy);
+      const wormyIcon = scene.add.graphics().setScrollFactor(0).setPosition(cx, cy);
+      drawWormHoles(wormyIcon, SWATCH_SIZE, SWATCH_SIZE, 2, 777, 0);
+      const label = scene.add
+        .text(cx, cy, 'W', { fontSize: '10px', color: '#101010', fontStyle: 'bold' })
+        .setOrigin(0.5)
+        .setScrollFactor(0);
+      this.devPanel.add([this.wormySwatch, wormyIcon, label]);
+    }
+
+    // Small text line under the grid showing the selected swatch's props
+    // (GDD §2.0 designer scale), e.g. "Steel · W10 H10 G3 B1 D0" — updated
+    // by setSelectedMaterial().
+    const propsLineY = PANEL_TOP_Y + gridH + 8;
+    this.devPropsText = scene.add
+      .text(PANEL_RIGHT_X - gridW / 2, propsLineY, '', { fontSize: '10px', color: '#c6cad4' })
+      .setOrigin(0.5, 0)
+      .setScrollFactor(0);
+    this.devPanel.add(this.devPropsText);
 
     this.overlay = scene.add.container(SCREEN_W / 2, SCREEN_H / 2).setScrollFactor(0).setDepth(200);
     const overlayBg = scene.add.rectangle(0, 0, SCREEN_W, SCREEN_H, 0x000000, 0.6).setScrollFactor(0);
@@ -260,7 +302,8 @@ export class Hud {
   }
 
   /** Highlights the currently forced/hook material's swatch in the dev
-   *  panel (a no-op visually while the panel is closed). */
+   *  panel and updates the props text line below it (a no-op visually
+   *  while the panel is closed, but kept in sync regardless). */
   setSelectedMaterial(id: MaterialId): void {
     this.currentSelected = id;
     ALL_MATERIAL_IDS.forEach((mid) => {
@@ -268,6 +311,21 @@ export class Hud {
       if (mid === this.currentSelected) btn.setStrokeStyle(3, 0xffffff, 1);
       else btn.setStrokeStyle(2, MATERIALS[mid].colors.stroke, 1);
     });
+    const p = MATERIALS[id].props;
+    this.devPropsText.setText(
+      `${MATERIAL_NAMES[id]} · W${p.weight} H${p.hardness} G${p.grip} B${p.bounce} D${p.airDrag}`,
+    );
+  }
+
+  /** The currently selected material's props text line, e.g. "Steel · W10 H10 G3 B1 D0" (test hook). */
+  devPropsLine(): string {
+    return this.devPropsText.text;
+  }
+
+  /** Highlights (or unhighlights) the extra "Wormy" swatch — GameScene calls this whenever the hook's wormy flag changes, alongside setSelectedMaterial. */
+  setWormySelected(active: boolean): void {
+    this.wormySelected = active;
+    this.wormySwatch.setStrokeStyle(this.wormySelected ? 3 : 2, this.wormySelected ? 0xffffff : MATERIALS.wood.colors.stroke, 1);
   }
 
   setGameOver(over: boolean, heightM = 0, bestM = 0): void {

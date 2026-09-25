@@ -11,7 +11,7 @@ declare global {
       height: () => number;
       reset: () => void;
       stepFast: (seconds: number) => void;
-      spawn: (material: MaterialId, xMeters: number, yMeters: number) => void;
+      spawn: (material: MaterialId, xMeters: number, yMeters: number) => number | null;
       jointCount: () => number;
       freezeTopFlatness: () => number;
       freezeAngleDeg: () => number;
@@ -23,11 +23,16 @@ declare global {
       allSleeping: () => boolean;
       hudWrenchCenter: () => { x: number; y: number };
       hudDevPanelOpen: () => boolean;
-      removals: () => { id: number; material: MaterialId; reason: 'fell' | 'shatter' | 'melt' | 'froze' | 'reset' | 'error' | 'culled'; ageMs: number; at: number }[];
+      hudDevPropsLine: () => string;
+      removals: () => { id: number; material: MaterialId; reason: 'fell' | 'shatter' | 'melt' | 'froze' | 'reset' | 'error' | 'culled' | 'eaten'; ageMs: number; at: number }[];
       lastDroppedPieceId: () => number | null;
       pieceExists: (id: number) => boolean;
       dynamicPieceCount: () => number;
       settledPieceCount: () => number;
+      displayedHeight: () => number;
+      squashLevel: (id: number) => number | null;
+      hookDirection: () => number;
+      spawnWormy: (xMeters: number, yMeters: number) => number | null;
     };
   }
 }

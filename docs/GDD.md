@@ -19,18 +19,39 @@ Session target: 60–120 s per run. One-thumb control.
 
 ## 2. Materials
 
-Units: Rapier meters, 1 m = 50 px. Base piece 2.0 × 0.6 m.
+Units: Rapier meters, 1 m = 50 px. Base piece 2.0 × 0.6 m (paper sheet 2.0 × 0.15 m).
 
-| Material | Density | Friction | Restitution | Special rule | Sound / haptic | Visual |
-|---|---|---|---|---|---|---|
-| Wood | 0.8 | 0.6 | 0.10 | — baseline | warm "knock", 20 ms | grain lines |
-| Stone | 2.6 | 0.8 | 0.02 | heavy impact shakes camera; crushes glass | low "thud", 45 ms | dust puff, shake |
-| Jelly | 0.9 | 0.9 | 0.55 | bouncy; visual squash/wobble (spring on scaleX/Y), no soft-body | "boing" pitch-up, [15,30,15] | squash + wobble |
-| Glass | 1.5 | 0.25 | 0.15 | crack at impact ≥ **crackForce**; shatter if cracked & hit again, impact ≥ **breakForce**, or carried load ≥ **loadLimit** for 0.5 s | "clink" / "crash", [10,20,60] | crack lines → shards |
-| **Freeze (special)** | 0.9 | 0.5 | 0.0 | see §2.1 — fills gaps, flat top, glues neighbours, melts | "splash" → "crackle" freeze, [20,40,20] | water blob → frost → ice |
-| *Metal (v1.1)* | 3.2 | 0.35 | 0.05 | dents glass-like but never breaks | "clang" | shine |
-| *Rubber (v1.1)* | 1.1 | 1.2 | 0.7 | grippy, very bouncy | "squeak" | — |
-| *Ice (v1.2)* | 0.9 | 0.02 | 0.05 | slippery; melts after 20 s (shrinks) | "tink" | frost |
+### 2.0 Material properties (designer scale 0–10)
+
+Every material is described by the same designer-facing properties; code maps them to physics in `materials.ts`.
+
+| Property | Meaning | Maps to |
+|---|---|---|
+| **Weight** | how heavy | density |
+| **Hardness** | how much impact/load it takes before it cracks, squashes or dents; also how hard it hits others | break/crack/squash thresholds, damage dealt |
+| **Grip** | how slippery | friction |
+| **Bounce** | how bouncy | restitution |
+| **Air drag** | how slowly it falls | linear damping while airborne (+ flutter for paper) |
+
+| Material | Weight | Hardness | Grip | Bounce | Air drag | Special behaviour | Sound / haptic |
+|---|---|---|---|---|---|---|---|
+| Wood | 3 | 5 | 6 | 1 | 0 | baseline | warm "knock" |
+| Stone | 7 | 8 | 8 | 0 | 0 | camera shake; crushes glass/foam | low "thud" |
+| **Steel** | 10 | 10 | 3 | 1 | 0 | never breaks; slides; crushes glass & polystyrene; big shake | metallic "clang" + ring |
+| Jelly | 3 | 1 | 9 | 6 | 0 | bouncy, squash/wobble visual | "boing" |
+| Glass | 5 | 3 (brittle) | 3 | 1 | 0 | cracks → shatters by impact or load | "clink" / "crash" |
+| **Polystyrene** | 1 | 2 | 5 | 2 | 5 | falls slowly; **squashes** under load (compresses in steps down to 50 % height, permanent); steel/stone drop crushes it fast | soft "squeak/crunch" |
+| **Paper** | 0.5 | 1 | 6 | 0 | 9 | thin sheet; falls very slowly and **flutters** side to side; a heavy block landing on it just presses it flat | "rustle", tiny haptic |
+| Freeze (special) | 3 | 6 | 5 | 0 | 0 | see §2.1 | "splash" → "crackle" |
+| *Rubber (later)* | 3 | 4 | 10 | 8 | 0 | grippy, very bouncy | "squeak" |
+
+Looks & living details:
+- **Jelly** is green, with bubbles floating inside and 1–3 tiny bugs trapped in it (visual only, slowly moving).
+- **Wormy wood** (variant of wood, ~1 in 6 wood pieces): worms peek out and eat it; holes appear, it gets weaker and smaller, and it is completely eaten after **120 s** (removed, no heart lost).
+
+Hook movement: each new piece starts moving in the opposite direction to the previous one (right, left, right, left…), then swings back and forth until dropped.
+
+Damage rule (generic): damage happens when impact force ≥ f(receiver hardness) and is scaled by the attacker's hardness (steel hits hardest). Glass and polystyrene use their own state machines (crack/shatter, squash steps) fed by this.
 
 ### 2.1 Freeze (special block)
 

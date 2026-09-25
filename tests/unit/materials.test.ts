@@ -1,14 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import { MATERIALS, MATERIAL_IDS, ALL_MATERIAL_IDS, PLANK_SIZE } from '../../src/game/materials';
+import { MATERIALS, MATERIAL_IDS, ALL_MATERIAL_IDS, PLANK_SIZE, PAPER_SIZE } from '../../src/game/materials';
 
 describe('materials', () => {
-  it('has the 4 rotation material ids, plus freeze as a special (not in rotation)', () => {
-    expect(MATERIAL_IDS).toEqual(['wood', 'stone', 'jelly', 'glass']);
-    expect(ALL_MATERIAL_IDS).toEqual(['wood', 'stone', 'jelly', 'glass', 'freeze']);
-    expect(Object.keys(MATERIALS).sort()).toEqual(['freeze', 'glass', 'jelly', 'stone', 'wood']);
+  it('has the 7 rotation material ids, plus freeze as a special (not in rotation)', () => {
+    expect(MATERIAL_IDS).toEqual(['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'paper']);
+    expect(ALL_MATERIAL_IDS).toEqual(['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'paper', 'freeze']);
+    expect(Object.keys(MATERIALS).sort()).toEqual(
+      ['freeze', 'glass', 'jelly', 'paper', 'polystyrene', 'steel', 'stone', 'wood'].sort(),
+    );
   });
 
-  it.each(MATERIAL_IDS)('%s has all required fields in sane ranges', (id) => {
+  it.each(ALL_MATERIAL_IDS)('%s has all required fields in sane ranges', (id) => {
     const m = MATERIALS[id];
     expect(m.id).toBe(id);
 
@@ -18,7 +20,9 @@ describe('materials', () => {
     expect(m.physics.friction).toBeLessThanOrEqual(2);
     expect(m.physics.restitution).toBeGreaterThanOrEqual(0);
     expect(m.physics.restitution).toBeLessThanOrEqual(1);
-    expect(m.physics.linearDamping).toBeGreaterThanOrEqual(0);
+    expect(m.physics.airborneLinearDamping).toBeGreaterThanOrEqual(0);
+    expect(m.physics.restingLinearDamping).toBeGreaterThanOrEqual(0);
+    expect(m.physics.airborneLinearDamping).toBeGreaterThanOrEqual(m.physics.restingLinearDamping);
     expect(m.physics.angularDamping).toBeGreaterThanOrEqual(0);
 
     expect(Number.isInteger(m.colors.fill)).toBe(true);
@@ -38,6 +42,18 @@ describe('materials', () => {
     expect(m.glass.breakForce).toBeGreaterThan(m.glass.crackForce);
     expect(m.glass.loadLimit).toBeGreaterThan(0);
     expect(m.glass.loadTime).toBeCloseTo(0.5);
+
+    expect(m.squash.impactForce).toBeGreaterThan(0);
+    expect(m.squash.loadLimit).toBeGreaterThan(0);
+    expect(m.squash.loadTime).toBeGreaterThan(0);
+
+    for (const p of [m.props.weight, m.props.hardness, m.props.grip, m.props.bounce, m.props.airDrag]) {
+      expect(p).toBeGreaterThanOrEqual(0);
+      expect(p).toBeLessThanOrEqual(10);
+    }
+
+    expect(m.size.width).toBeGreaterThan(0);
+    expect(m.size.height).toBeGreaterThan(0);
   });
 
   it('stone is denser and less bouncy than jelly', () => {
@@ -63,9 +79,10 @@ describe('materials', () => {
 
   it('freeze has sane physics/feel and GDD §2.1 timings', () => {
     const m = MATERIALS.freeze;
-    expect(m.physics.density).toBeCloseTo(0.9);
+    expect(m.physics.density).toBeGreaterThan(0.7);
+    expect(m.physics.density).toBeLessThan(1.1);
     expect(m.physics.friction).toBeCloseTo(0.5);
-    expect(m.physics.restitution).toBe(0);
+    expect(m.physics.restitution).toBeLessThan(0.05);
     expect(m.feel.vibrate).toEqual([20, 40, 20]);
     expect(m.freeze.volume).toBeGreaterThan(0);
     // Whole block melts within 1 minute: 30s to start weakening + 30s to fully melt.
@@ -88,5 +105,63 @@ describe('materials', () => {
   it('plank size matches GDD base piece', () => {
     expect(PLANK_SIZE.width).toBeCloseTo(2.0);
     expect(PLANK_SIZE.height).toBeCloseTo(0.6);
+  });
+
+  it('paper is a thin sheet, not a plank (GDD §2)', () => {
+    expect(MATERIALS.paper.size).toEqual(PAPER_SIZE);
+    expect(PAPER_SIZE.width).toBeCloseTo(2.0);
+    expect(PAPER_SIZE.height).toBeCloseTo(0.15);
+    expect(PAPER_SIZE.height).toBeLessThan(PLANK_SIZE.height);
+  });
+
+  it('steel is the heaviest, hardest, most-shake material and never breaks like glass', () => {
+    const densities = ALL_MATERIAL_IDS.map((id) => MATERIALS[id].physics.density);
+    expect(MATERIALS.steel.physics.density).toBe(Math.max(...densities));
+    expect(MATERIALS.steel.props.hardness).toBe(10);
+    expect(MATERIALS.steel.feel.shake).toBe(1);
+    // Low grip ("slides") -> low friction, on par with glass.
+    expect(MATERIALS.steel.physics.friction).toBeLessThan(MATERIALS.wood.physics.friction);
+  });
+
+  it('polystyrene and paper are far lighter than wood and fall slower (more airborne damping)', () => {
+    expect(MATERIALS.polystyrene.physics.density).toBeLessThan(MATERIALS.wood.physics.density);
+    expect(MATERIALS.paper.physics.density).toBeLessThan(MATERIALS.polystyrene.physics.density);
+    expect(MATERIALS.polystyrene.physics.airborneLinearDamping).toBeGreaterThan(
+      MATERIALS.wood.physics.airborneLinearDamping,
+    );
+    expect(MATERIALS.paper.physics.airborneLinearDamping).toBeGreaterThan(
+      MATERIALS.polystyrene.physics.airborneLinearDamping,
+    );
+    // Once resting, both settle back down near the baseline (not floaty forever).
+    expect(MATERIALS.polystyrene.physics.restingLinearDamping).toBeLessThan(
+      MATERIALS.polystyrene.physics.airborneLinearDamping,
+    );
+    expect(MATERIALS.paper.physics.restingLinearDamping).toBeLessThan(MATERIALS.paper.physics.airborneLinearDamping);
+  });
+
+  it("wood/stone/jelly/glass/freeze keep ~their pre-props physics values (props.ts's derivation is a compromise, documented per-property)", () => {
+    // Generous tolerance: several of these materials share a prop value
+    // (e.g. wood/jelly/freeze are all Weight=3) with a *different* legacy
+    // value, so a single-scalar-per-property mapping can't hit every one
+    // exactly — see props.ts's file comment. This checks the derivation
+    // stayed in the same ballpark, not exact parity.
+    const closeWithin = (actual: number, legacy: number, fraction: number): void => {
+      expect(Math.abs(actual - legacy)).toBeLessThanOrEqual(Math.max(0.05, legacy * fraction));
+    };
+    closeWithin(MATERIALS.wood.physics.density, 0.8, 0.15);
+    closeWithin(MATERIALS.stone.physics.density, 2.6, 0.1);
+    closeWithin(MATERIALS.jelly.physics.density, 0.9, 0.15);
+    closeWithin(MATERIALS.glass.physics.density, 1.5, 0.15);
+
+    closeWithin(MATERIALS.wood.physics.friction, 0.6, 0.05);
+    closeWithin(MATERIALS.stone.physics.friction, 0.8, 0.05);
+    closeWithin(MATERIALS.jelly.physics.friction, 0.9, 0.05);
+    closeWithin(MATERIALS.glass.physics.friction, 0.25, 0.05);
+    closeWithin(MATERIALS.freeze.physics.friction, 0.5, 0.05);
+
+    closeWithin(MATERIALS.stone.physics.restitution, 0.02, 0.5);
+    closeWithin(MATERIALS.jelly.physics.restitution, 0.55, 0.1);
+
+    closeWithin(MATERIALS.jelly.physics.restingLinearDamping, 0.4, 0.15);
   });
 });
