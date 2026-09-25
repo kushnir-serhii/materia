@@ -81,3 +81,16 @@ export function stepJellySpring(
   const a = envelope * Math.cos(2 * Math.PI * params.frequencyHz * state.t);
   return { sx: 1 + a, sy: 1 - a };
 }
+
+/**
+ * The wobble's current envelope magnitude (0 once inactive/decayed) without
+ * advancing it — used by the jelly-look redraw (drifting ripples along its
+ * outline get bigger right after an impact, fading with the same envelope
+ * as the squash/wobble itself) and to decide how often it's worth redrawing
+ * at all (PieceManager.updateLivingLook).
+ */
+export function jellySpringEnvelope(state: JellySpringState, params: JellySpringParams = JELLY_SPRING_PARAMS): number {
+  if (!state.active) return 0;
+  const decayRate = 3.9 / params.decayTime;
+  return state.amplitude * Math.exp(-decayRate * state.t);
+}

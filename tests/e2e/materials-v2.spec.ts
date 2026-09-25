@@ -33,6 +33,9 @@ declare global {
       squashLevel: (id: number) => number | null;
       hookDirection: () => number;
       spawnWormy: (xMeters: number, yMeters: number) => number | null;
+      pieceRotationDeg: (id: number) => number | null;
+      jellyTopBottomRatio: () => number;
+      pieceIsAirborne: (id: number) => boolean | null;
     };
   }
 }
@@ -232,6 +235,40 @@ test('hook direction alternates for 4 consecutive pieces', async ({ page }) => {
   for (let i = 1; i < directions.length; i++) {
     expect(Math.sign(directions[i])).toBe(-Math.sign(directions[i - 1]));
   }
+
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+});
+
+test('polystyrene falls smoothly without rotating, then settles', async ({ page, baseURL }) => {
+  const { pageErrors, consoleErrors } = collectErrors(page);
+
+  await page.goto('/');
+  await page.waitForFunction(() => !!window.__materia, undefined, { timeout: 5000 });
+
+  await page.evaluate(() => {
+    window.__materia!.reset();
+    window.__materia!.setMaterial('polystyrene');
+    window.__materia!.drop();
+  });
+
+  const pieceId = await page.evaluate(() => window.__materia!.lastDroppedPieceId());
+  expect(pieceId).not.toBeNull();
+
+  // Sample rotation every 0.1s (6 frames at 60Hz) until contact or 1s has passed.
+  const angles: number[] = [];
+  let maxAngleDeg = 0;
+  for (let i = 0; i < 10; i++) {
+    await page.evaluate(() => window.__materia!.stepFast(0.1));
+    const angle = await page.evaluate((id) => window.__materia!.pieceRotationDeg(id), pieceId!);
+    if (angle !== null) {
+      angles.push(angle);
+      maxAngleDeg = Math.max(maxAngleDeg, Math.abs(angle));
+    }
+  }
+
+  // While airborne, max |angle| must stay below 0.5° (smooth fall, no rotation).
+  expect(maxAngleDeg).toBeLessThan(0.5);
 
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);

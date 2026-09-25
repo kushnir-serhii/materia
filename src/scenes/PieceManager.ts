@@ -5,9 +5,23 @@
 import Phaser from 'phaser';
 import type RAPIER from '@dimforge/rapier2d-compat';
 import { PhysicsWorld, PX_PER_M, type RapierPiece } from '../physics/physics';
-import { MATERIALS, type Material, type MaterialId } from '../game/materials';
+import {
+  MATERIALS,
+  STEEL_AIRBORNE_GRAVITY_SCALE,
+  JELLY_TOP_WIDTH_RATIO,
+  JELLY_CORNER_RADIUS_M,
+  type Material,
+  type MaterialId,
+} from '../game/materials';
 import { createGlassPieceState, stepGlass, type GlassPieceState } from '../game/glass';
-import { createJellySpring, forceToJellyAmplitude, triggerJellySpring, stepJellySpring, type JellySpringState } from '../game/spring';
+import {
+  createJellySpring,
+  forceToJellyAmplitude,
+  triggerJellySpring,
+  stepJellySpring,
+  jellySpringEnvelope,
+  type JellySpringState,
+} from '../game/spring';
 import { createSquashPieceState, stepSquash, SQUASH_HEIGHT_FRACTIONS, type SquashPieceState } from '../game/squash';
 import { createWormState, stepWorm, WORM_SIZE_FRACTIONS, WORM_HARDNESS_FRACTIONS, type WormState } from '../game/worm';
 import { damageFactor } from '../game/props';
@@ -73,8 +87,12 @@ const PAPER_FLUTTER_FORCE_N = 0.045;
 const PAPER_FLUTTER_TORQUE = 0.012;
 /** GDD §2.0: ~1 in 6 wood pieces spawn as a "wormy" variant (see worm.ts). */
 const WORMY_WOOD_CHANCE = 1 / 6;
-/** How often (ms) jelly/wormy-wood's cheap cosmetic animation is allowed to redraw — see updateLivingLook. Deliberately coarse, never every frame. */
+/** How often (ms) a wormy-wood piece's cheap cosmetic animation (peeking worm) is allowed to redraw — see updateLivingLook. Deliberately coarse, never every frame. */
 const LIVING_LOOK_REDRAW_MS = 300;
+/** Jelly's cosmetic redraw rate while idle/resting (GDD §2.0 designer feedback: "~20Hz when idle"). */
+const JELLY_IDLE_REDRAW_MS = 50;
+/** Jelly's cosmetic redraw rate while actively wobbling (right after an impact) — faster than idle so the ripple reads as animated, still throttled (never every frame). */
+const JELLY_WOBBLE_REDRAW_MS = 33;
 
 /** Why a piece was removed — every removal goes through PieceManager.destroy()/logRemoval() so this is always recorded (see removals()/window.__materia.removals()). */
 export type RemovalReason =
@@ -228,13 +246,26 @@ export class PieceManager {
     // Decided once, up front, so the initial graphics (worm holes or not)
     // and the PieceRuntime's `worm` state never disagree.
     const wormy = material === 'wood' && (wormyOverride ?? Math.random() < WORMY_WOOD_CHANCE);
-    const { body, collider }: RapierPiece = this.rapierWorld.createDynamicBox(
-      this.materials[material],
-      xM,
-      yM,
-      halfWM,
-      halfHM,
-    );
+    const { body, collider }: RapierPiece =
+      material === 'jelly'
+        ? this.rapierWorld.createDynamicTrapezoid(
+            this.materials[material],
+            xM,
+            yM,
+            halfWM,
+            halfHM,
+            JELLY_TOP_WIDTH_RATIO,
+            JELLY_CORNER_RADIUS_M,
+          )
+        : this.rapierWorld.createDynamicBox(
+            this.materials[material],
+            xM,
+            yM,
+            halfWM,
+            halfHM,
+            0,
+            material === 'steel' ? STEEL_AIRBORNE_GRAVITY_SCALE : 1,
+          );
 
     const wPx = size.width * PX_PER_M;
     const hPx = size.height * PX_PER_M;
@@ -277,6 +308,11 @@ export class PieceManager {
     };
     this.pieces.set(collider.handle, piece);
     this.piecesById.set(id, piece);
+    // Polystyrene: lock rotation while airborne so it falls smoothly without rotating.
+    if (material === 'polystyrene') {
+      body.lockRotations(true, true);
+      body.setAngvel(0, true);
+    }
     return piece;
   }
 
@@ -425,11 +461,22 @@ export class PieceManager {
     return damageFactor(attackerHardness, receiverHardness, rawForce);
   }
 
-  /** First-contact transition: switches a piece from its airborne linear damping to its (lower) resting one, so a landed polystyrene/paper stack settles and sleeps normally instead of feeling floaty forever (GDD §2.0). No-op past the first call. */
+  /** First-contact transition: switches a piece from its airborne linear damping to its (lower) resting one, so a landed polystyrene/paper stack settles and sleeps normally instead of feeling floaty forever (GDD §2.0). Unlocks rotation for polystyrene. No-op past the first call. */
   private landPiece(piece: PieceRuntime): void {
     if (!piece.airborne) return;
     piece.airborne = false;
     piece.body.setLinearDamping(this.materials[piece.material].physics.restingLinearDamping);
+    // Polystyrene: unlock rotation on first contact so it can tip realistically on the tower.
+    if (piece.material === 'polystyrene') {
+      piece.body.lockRotations(false, true);
+    }
+    // Steel: its extra airborne gravityScale (GDD §2.0 "falls hard and
+    // fast") is only meant to speed up the drop, not press down on
+    // whatever it lands on any harder than its own weight — back to normal
+    // the instant it's resting.
+    if (piece.material === 'steel') {
+      piece.body.setGravityScale(1, true);
+    }
   }
 
   /**
@@ -501,19 +548,25 @@ export class PieceManager {
   }
 
   /**
-   * Advances and, at most every LIVING_LOOK_REDRAW_MS, redraws a jelly or
-   * wormy-wood piece's cheap cosmetic animation (drifting bubbles/bugs,
-   * a peeking worm — GDD §2.0). No-op for every other piece; deliberately
-   * NOT done every frame (see PieceRuntime.visualPhase's doc).
+   * Advances and, at a throttled rate, redraws a jelly or wormy-wood
+   * piece's cheap cosmetic animation (drifting bubbles/bugs, an animated
+   * ripple along jelly's outline, a peeking worm — GDD §2.0). No-op for
+   * every other piece; deliberately never done every frame (see
+   * PieceRuntime.visualPhase's doc). Jelly redraws faster while actively
+   * wobbling (right after an impact) than while idle/resting — "redraw
+   * only when wobbling or on a low rate (~20Hz) when idle" — everything
+   * else (wormy wood) always uses the slower, coarser rate.
    */
   private updateLivingLook(piece: PieceRuntime, dt: number): void {
     if (piece.material !== 'jelly' && !piece.worm) return;
     const now = performance.now();
     if (now < piece.nextVisualRedrawMs) return;
-    piece.nextVisualRedrawMs = now + LIVING_LOOK_REDRAW_MS;
-    piece.visualPhase += dt * 60 * (LIVING_LOOK_REDRAW_MS / 1000); // keep motion roughly frame-rate independent despite the coarse redraw cadence
+    const wobbleMag = piece.jellySpring ? jellySpringEnvelope(piece.jellySpring) : 0;
+    const interval = piece.material === 'jelly' && wobbleMag > 0 ? JELLY_WOBBLE_REDRAW_MS : piece.material === 'jelly' ? JELLY_IDLE_REDRAW_MS : LIVING_LOOK_REDRAW_MS;
+    piece.nextVisualRedrawMs = now + interval;
+    piece.visualPhase += dt * 60 * (interval / 1000); // keep motion roughly frame-rate independent despite the throttled redraw cadence
     const material = this.materials[piece.material];
-    drawPieceBase(piece.graphics, material, piece.wPx, piece.hPx, piece.id, piece.visualPhase);
+    drawPieceBase(piece.graphics, material, piece.wPx, piece.hPx, piece.id, piece.visualPhase, wobbleMag);
     if (piece.worm) drawWormHoles(piece.graphics, piece.wPx, piece.hPx, piece.worm.level, piece.id, piece.visualPhase);
   }
 

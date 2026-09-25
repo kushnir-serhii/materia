@@ -110,6 +110,7 @@ export class PhysicsWorld {
     halfWidth: number,
     halfHeight: number,
     angle = 0,
+    gravityScale = 1,
   ): RapierPiece {
     // Glass must keep reporting contact-force events even while resting, so its
     // sustained-load rule (materials.ts / glass.ts) can see the load; Rapier
@@ -118,7 +119,46 @@ export class PhysicsWorld {
     // Every piece starts falling (airborne) — PieceManager switches it to
     // restingLinearDamping the moment it first registers a contact (see its
     // airborne/landed handling), so this initial value is always the
-    // airborne one.
+    // airborne one. `gravityScale` is likewise an airborne-only value for
+    // materials that use it (steel — GDD §2.0 "falls down hard and fast");
+    // PieceManager resets it to 1 on landing, same pattern as damping.
+    const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(x, y)
+      .setRotation(angle)
+      .setLinearDamping(material.physics.airborneLinearDamping)
+      .setAngularDamping(material.physics.angularDamping)
+      .setGravityScale(gravityScale)
+      .setCanSleep(canSleep);
+    const body = this.world.createRigidBody(bodyDesc);
+    const colliderDesc = RAPIER.ColliderDesc.cuboid(halfWidth, halfHeight)
+      .setDensity(material.physics.density)
+      .setFriction(material.physics.friction)
+      .setRestitution(material.physics.restitution)
+      .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+      .setContactForceEventThreshold(CONTACT_FORCE_EVENT_THRESHOLD);
+    const collider = this.world.createCollider(colliderDesc, body);
+    return { body, collider };
+  }
+
+  /**
+   * Same as createDynamicBox, but the collider is a rounded convex trapezoid
+   * (top edge `topWidthRatio` of the bottom edge's width, y-down so "top" is
+   * -halfHeight) instead of a plain box — used for jelly (GDD §2.0: "top
+   * slightly narrower than bottom... rounded corners"). Bottom stays
+   * `halfWidth` wide so footprint/overlap logic elsewhere (camera, freeze
+   * fill) that reads a jelly piece's halfWM is unaffected.
+   */
+  createDynamicTrapezoid(
+    material: Material,
+    x: number,
+    y: number,
+    halfWidth: number,
+    halfHeight: number,
+    topWidthRatio: number,
+    cornerRadius: number,
+    angle = 0,
+  ): RapierPiece {
+    const canSleep = material.id !== 'glass';
     const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
       .setTranslation(x, y)
       .setRotation(angle)
@@ -126,7 +166,14 @@ export class PhysicsWorld {
       .setAngularDamping(material.physics.angularDamping)
       .setCanSleep(canSleep);
     const body = this.world.createRigidBody(bodyDesc);
-    const colliderDesc = RAPIER.ColliderDesc.cuboid(halfWidth, halfHeight)
+    const topHalfWidth = halfWidth * topWidthRatio;
+    const points = new Float32Array([
+      -topHalfWidth, -halfHeight,
+      topHalfWidth, -halfHeight,
+      halfWidth, halfHeight,
+      -halfWidth, halfHeight,
+    ]);
+    const colliderDesc = (RAPIER.ColliderDesc.roundConvexHull(points, cornerRadius) ?? RAPIER.ColliderDesc.cuboid(halfWidth, halfHeight))
       .setDensity(material.physics.density)
       .setFriction(material.physics.friction)
       .setRestitution(material.physics.restitution)

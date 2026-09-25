@@ -1,6 +1,14 @@
 import Phaser from 'phaser';
 import { PX_PER_M } from '../physics/physics';
-import { MATERIALS, MATERIAL_IDS, ALL_MATERIAL_IDS, cloneMaterialsForRuntime, type Material, type MaterialId } from '../game/materials';
+import {
+  MATERIALS,
+  MATERIAL_IDS,
+  ALL_MATERIAL_IDS,
+  JELLY_TOP_WIDTH_RATIO,
+  cloneMaterialsForRuntime,
+  type Material,
+  type MaterialId,
+} from '../game/materials';
 import { drawPieceBase, drawWormHoles } from '../ui/pieceView';
 import { drawBackground } from '../ui/background';
 import { Hud } from '../ui/hud';
@@ -142,6 +150,10 @@ declare global {
       squashLevel: (id: number) => number | null;
       hookDirection: () => number;
       spawnWormy: (xMeters: number, yMeters: number) => number | null;
+      /** The piece's rotation angle in degrees, or null if piece doesn't exist. */
+      pieceRotationDeg: (id: number) => number | null;
+      jellyTopBottomRatio: () => number;
+      pieceIsAirborne: (id: number) => boolean | null;
     };
   }
 }
@@ -375,6 +387,12 @@ export class GameScene extends Phaser.Scene {
       displayedHeight: () => this.displayedHeightM,
       squashLevel: (id) => this.pieceManager.piecesById.get(id)?.squash?.level ?? null,
       hookDirection: () => this.hookDirection,
+      pieceRotationDeg: (id: number) => {
+        const piece = this.pieceManager.piecesById.get(id);
+        return piece ? (piece.body.rotation() * 180) / Math.PI : null;
+      },
+      jellyTopBottomRatio: () => JELLY_TOP_WIDTH_RATIO,
+      pieceIsAirborne: (id) => this.pieceManager.piecesById.get(id)?.airborne ?? null,
     };
   }
 

@@ -33,6 +33,9 @@ declare global {
       squashLevel: (id: number) => number | null;
       hookDirection: () => number;
       spawnWormy: (xMeters: number, yMeters: number) => number | null;
+      pieceRotationDeg: (id: number) => number | null;
+      jellyTopBottomRatio: () => number;
+      pieceIsAirborne: (id: number) => boolean | null;
     };
   }
 }

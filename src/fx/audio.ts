@@ -174,15 +174,18 @@ export function playImpactSound(material: MaterialId, force: number): void {
       break;
     }
     case 'steel': {
-      // Metallic "clang" — a hard noise transient plus several inharmonic
-      // ringing partials that decay at different rates (a bell/metal-plate
-      // approximation cheap enough to synth per-hit).
-      const g = allocVoice(c, dest, volume, 0.9);
+      // Deep low thud (~50Hz) + a hard noise transient + several inharmonic
+      // ringing partials that decay slowly (long ring) — a heavier, louder
+      // hit than stone's (designer feedback round: "louder than stone,
+      // deep low thud + metallic clang with long ringing partials").
+      const loud = Math.min(1, volume * 1.25);
+      const g = allocVoice(c, dest, loud, 1.6);
       if (!g) return;
-      playNoise(c, g, t, 0.03, volume * 0.7, 'highpass', 2500, 1.2);
-      const partials = [1, 1.83, 2.41, 3.76, 5.1];
+      playNoise(c, g, t, 0.03, loud * 0.7, 'highpass', 2500, 1.2);
+      playTone(c, g, t, 50 * pMul, 0.4, loud, 'sine');
+      const partials = [1, 1.83, 2.41, 3.76, 5.1, 6.8];
       partials.forEach((mul, i) => {
-        playTone(c, g, t, 480 * pMul * mul, 0.55 - i * 0.06, volume * (0.5 / (i + 1)), 'sine');
+        playTone(c, g, t, 480 * pMul * mul, 1.2 - i * 0.12, loud * (0.5 / (i + 1)), 'sine');
       });
       break;
     }

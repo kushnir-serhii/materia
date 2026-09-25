@@ -195,6 +195,24 @@ const POLYSTYRENE_SQUASH_PARAMS: SquashParams = {
   loadTime: 0.35,
 };
 
+/**
+ * Steel-only: extra gravity while airborne so it visibly drops faster than
+ * every other material (GDD §2.0 designer feedback — "falls down HARD and
+ * fast"). PieceManager resets a steel piece's Rapier gravityScale back to 1
+ * the instant it lands (see landPiece), so it doesn't press down on
+ * whatever it's resting on any harder than its weight alone would.
+ */
+export const STEEL_AIRBORNE_GRAVITY_SCALE = 1.8;
+
+/**
+ * Jelly-only shape (GDD §2.0 designer feedback): top edge is this fraction
+ * of the bottom edge's width — a trapezoid, not a plain box — with rounded
+ * corners. Both the Rapier collider (createDynamicTrapezoid) and the drawn
+ * look use these same numbers, so stacking actually reflects the taper.
+ */
+export const JELLY_TOP_WIDTH_RATIO = 0.85;
+export const JELLY_CORNER_RADIUS_M = 0.05;
+
 /*
  * Freeze glue-break force: GDD §2.1 wants it "≈ stone 3 m drop" — measurement
  * D in the glass comment above found a stone plank dropped from 3m hits with
@@ -277,7 +295,8 @@ export const MATERIALS: Record<MaterialId, Material> = {
     },
     feel: {
       sound: 'steel',
-      vibrate: [55],
+      // Strong short pulse — designer feedback round: "strong short haptic".
+      vibrate: [65],
       // Max shake — GDD: "big camera shake" (materials.test.ts caps shake at 1).
       shake: 1,
     },

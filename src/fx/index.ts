@@ -25,6 +25,8 @@ export { setVibrationEnabled, isVibrationEnabled };
 /** Impact force (N) above which an impact counts as "big" for hit-stop/droplets. Matches glass's breakForce-level threshold from materials.ts. */
 const BIG_IMPACT_FORCE = MATERIALS.glass.glass.breakForce;
 const HIT_STOP_MS = 40;
+/** Steel's own, shorter hit-stop on ordinary landings (see fx()) — GDD §2.0 designer feedback: "short hit-stop". */
+const STEEL_HIT_STOP_MS = 25;
 
 let effects: Effects | null = null;
 
@@ -109,6 +111,10 @@ export function fx(
   if (effects) {
     if (pieceMaterial === 'stone') effects.dust(xPx, yPx, 8, material.colors.stroke);
     else if (pieceMaterial === 'wood') effects.dust(xPx, yPx, 4, material.colors.stroke);
+    // Small dust/sparks on every solid steel landing (designer feedback
+    // round), not just the biggest impacts — a bright, hot-metal color
+    // rather than steel's own grey.
+    else if (pieceMaterial === 'steel') effects.dust(xPx, yPx, 5, 0xffd27f);
 
     if (material.feel.shake > 0) {
       effects.shake(material.feel.shake * Math.min(1, force / (BIG_IMPACT_FORCE * 1.2)));
@@ -117,6 +123,12 @@ export function fx(
     if (force >= BIG_IMPACT_FORCE) {
       effects.hitStop(HIT_STOP_MS);
       if (pieceMaterial === 'jelly') effects.droplets(xPx, yPx);
+    } else if (pieceMaterial === 'steel') {
+      // Steel gets its own short hit-stop on ordinary landings too (GDD
+      // §2.0 designer feedback: "short hit-stop") — falling hard and fast
+      // means it can land well under BIG_IMPACT_FORCE (glass's
+      // breakForce) and still deserve the heavier, punchier feel.
+      effects.hitStop(STEEL_HIT_STOP_MS);
     }
   }
 }

@@ -3,7 +3,7 @@
 // the container per frame, it never redraws every frame.
 
 import Phaser from 'phaser';
-import type { Material, MaterialColors } from '../game/materials';
+import { JELLY_TOP_WIDTH_RATIO, JELLY_CORNER_RADIUS_M, type Material, type MaterialColors } from '../game/materials';
 import type { FreezeStrip } from '../game/freeze';
 import { PX_PER_M } from '../physics/physics';
 
@@ -13,6 +13,83 @@ function hashRandom(seed: number): number {
   return x - Math.floor(x);
 }
 
+interface Pt {
+  x: number;
+  y: number;
+}
+
+/**
+ * A trapezoid (top edge `topRatio` of the bottom edge's width, y-down so
+ * "top" is -hh) with its 4 corners chamfered by `cornerPx` — a cheap
+ * (no trig-heavy arcs) approximation of rounded corners, good enough at the
+ * ~100x30px a piece actually renders at. Used as the base shape jelly's
+ * animated wave ripple (jellyWavePoints) displaces.
+ */
+function chamferedTrapezoidPoints(wPx: number, hPx: number, topRatio: number, cornerPx: number): Pt[] {
+  const hw = wPx / 2;
+  const hh = hPx / 2;
+  const topHw = hw * topRatio;
+  const corners: Pt[] = [
+    { x: -topHw, y: -hh },
+    { x: topHw, y: -hh },
+    { x: hw, y: hh },
+    { x: -hw, y: hh },
+  ];
+  const n = corners.length;
+  const pts: Pt[] = [];
+  for (let i = 0; i < n; i++) {
+    const prev = corners[(i - 1 + n) % n];
+    const cur = corners[i];
+    const next = corners[(i + 1) % n];
+    const toPrevLen = Math.hypot(prev.x - cur.x, prev.y - cur.y) || 1;
+    const toNextLen = Math.hypot(next.x - cur.x, next.y - cur.y) || 1;
+    const r = Math.max(0, Math.min(cornerPx, toPrevLen * 0.4, toNextLen * 0.4));
+    pts.push({ x: cur.x + ((prev.x - cur.x) / toPrevLen) * r, y: cur.y + ((prev.y - cur.y) / toPrevLen) * r });
+    pts.push({ x: cur.x + ((next.x - cur.x) / toNextLen) * r, y: cur.y + ((next.y - cur.y) / toNextLen) * r });
+  }
+  return pts;
+}
+
+/**
+ * Displaces a closed polygon's perimeter (subdivided `subdiv` times per
+ * edge) outward/inward along a sine wave running around it — jelly's
+ * "soft animated waves along its outline" (GDD §2.0 designer feedback).
+ * Displacement direction approximates the outward normal via the vector
+ * from the shape's centroid, which is accurate enough for a small, roughly
+ * convex shape like jelly's trapezoid.
+ */
+function jellyWavePoints(base: Pt[], ampPx: number, waveCount: number, phase: number, subdiv: number): Pt[] {
+  const n = base.length;
+  let cx = 0;
+  let cy = 0;
+  for (const p of base) {
+    cx += p.x;
+    cy += p.y;
+  }
+  cx /= n;
+  cy /= n;
+
+  const out: Pt[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = base[i];
+    const b = base[(i + 1) % n];
+    for (let s = 0; s < subdiv; s++) {
+      const t = s / subdiv;
+      const x = a.x + (b.x - a.x) * t;
+      const y = a.y + (b.y - a.y) * t;
+      let nx = x - cx;
+      let ny = y - cy;
+      const len = Math.hypot(nx, ny) || 1;
+      nx /= len;
+      ny /= len;
+      const globalT = (i + t) / n;
+      const disp = ampPx * Math.sin(2 * Math.PI * waveCount * globalT + phase);
+      out.push({ x: x + nx * disp, y: y + ny * disp });
+    }
+  }
+  return out;
+}
+
 export function drawPieceBase(
   g: Phaser.GameObjects.Graphics,
   material: Material,
@@ -20,6 +97,8 @@ export function drawPieceBase(
   hPx: number,
   seed: number,
   phase = 0,
+  /** Jelly only: the current squash/wobble envelope magnitude (0..~0.35 — see spring.ts's jellySpringEnvelope) — makes the edge ripple bigger right after an impact, fading as the wobble decays. */
+  wobbleMag = 0,
 ): void {
   const hw = wPx / 2;
   const hh = hPx / 2;
@@ -57,12 +136,23 @@ export function drawPieceBase(
       break;
     }
     case 'jelly': {
-      // Green (GDD §2.0), with a few bubbles and 1-3 tiny bugs floating
-      // inside — see drawJellyLiving for the low-frequency animation of both.
-      g.fillStyle(fill, 0.75);
-      g.fillRoundedRect(-hw, -hh, wPx, hPx, Math.min(10, hh));
-      g.lineStyle(2, stroke, 0.9);
-      g.strokeRoundedRect(-hw, -hh, wPx, hPx, Math.min(10, hh));
+      // Trapezoid (top JELLY_TOP_WIDTH_RATIO of the bottom, rounded
+      // corners — matches the Rapier collider, createDynamicTrapezoid),
+      // translucent green, a gently rippling animated outline (bigger right
+      // after an impact via `wobbleMag`, fading with the wobble), a glossy
+      // highlight near the top, and the bubbles/bugs from drawJellyLiving.
+      const basePts = chamferedTrapezoidPoints(wPx, hPx, JELLY_TOP_WIDTH_RATIO, JELLY_CORNER_RADIUS_M * PX_PER_M);
+      const rippleAmpPx = 0.6 + wobbleMag * 12;
+      const wavePts = jellyWavePoints(basePts, rippleAmpPx, 5, phase * 2.2, 3).map(
+        (p) => new Phaser.Math.Vector2(p.x, p.y),
+      );
+      g.fillStyle(fill, 0.5);
+      g.fillPoints(wavePts, true);
+      g.lineStyle(2, stroke, 0.85);
+      g.strokePoints(wavePts, true, true);
+      // Glossy highlight near the top.
+      g.fillStyle(0xffffff, 0.22);
+      g.fillEllipse(-hw * 0.12, -hh * 0.45, wPx * 0.42, hh * 0.7);
       drawJellyLiving(g, wPx, hPx, seed, phase);
       break;
     }
@@ -84,7 +174,9 @@ export function drawPieceBase(
       break;
     }
     case 'steel': {
-      // Brushed grey-blue with a bright highlight line and a row of rivets.
+      // Brushed grey-blue body, rivets evenly around the whole perimeter —
+      // no highlight line (designer feedback round: "remove the white
+      // highlight line").
       g.fillStyle(fill, 1);
       g.fillRect(-hw, -hh, wPx, hPx);
       // Brushed streaks.
@@ -98,21 +190,7 @@ export function drawPieceBase(
       }
       g.lineStyle(2, stroke, 1);
       g.strokeRect(-hw, -hh, wPx, hPx);
-      // Bright highlight line near the top.
-      g.lineStyle(2.5, 0xd8e4ee, 0.85);
-      g.beginPath();
-      g.moveTo(-hw + 4, -hh * 0.5);
-      g.lineTo(hw - 4, -hh * 0.5);
-      g.strokePath();
-      // Rivets.
-      g.fillStyle(0x3a4552, 0.9);
-      const rivetR = Math.max(1.5, hh * 0.12);
-      const rivetInsetX = hw * 0.85;
-      for (const rx of [-rivetInsetX, rivetInsetX]) {
-        for (const ry of [-hh * 0.55, hh * 0.55]) {
-          g.fillCircle(rx, ry, rivetR);
-        }
-      }
+      drawSteelRivets(g, wPx, hPx);
       break;
     }
     case 'polystyrene': {
@@ -151,6 +229,51 @@ export function drawPieceBase(
         g.strokePath();
       }
       break;
+    }
+  }
+}
+
+/** Spacing between steel's perimeter rivets (GDD §2.0 designer feedback: "every ~0.25m along all 4 edges"). */
+const STEEL_RIVET_SPACING_M = 0.25;
+
+/** Small round rivets, evenly spaced around a steel piece's whole perimeter, each with a tiny highlight dot. */
+function drawSteelRivets(g: Phaser.GameObjects.Graphics, wPx: number, hPx: number): void {
+  const hw = wPx / 2;
+  const hh = hPx / 2;
+  const spacing = STEEL_RIVET_SPACING_M * PX_PER_M;
+  const inset = Math.min(hw, hh, Math.max(3, Math.min(hw, hh) * 0.18));
+  const rivetR = Math.max(1.2, Math.min(hw, hh) * 0.09);
+
+  const placeRivet = (x: number, y: number): void => {
+    g.fillStyle(0x3a4552, 0.9);
+    g.fillCircle(x, y, rivetR);
+    g.fillStyle(0xd8e4ee, 0.8);
+    g.fillCircle(x - rivetR * 0.3, y - rivetR * 0.3, rivetR * 0.35);
+  };
+
+  const topY = -hh + inset;
+  const bottomY = hh - inset;
+  const xStart = -hw + inset;
+  const xEnd = hw - inset;
+  const xCount = Math.max(2, Math.round((xEnd - xStart) / spacing) + 1);
+  for (let i = 0; i < xCount; i++) {
+    const x = xStart + ((xEnd - xStart) * i) / (xCount - 1);
+    placeRivet(x, topY);
+    placeRivet(x, bottomY);
+  }
+
+  // Left/right edges, between the corners already covered above.
+  const leftX = -hw + inset;
+  const rightX = hw - inset;
+  const yStart = topY + spacing;
+  const yEnd = bottomY - spacing;
+  if (yEnd > yStart) {
+    const yCount = Math.max(1, Math.round((yEnd - yStart) / spacing) + 1);
+    for (let i = 0; i < yCount; i++) {
+      const t = yCount > 1 ? i / (yCount - 1) : 0.5;
+      const y = yStart + (yEnd - yStart) * t;
+      placeRivet(leftX, y);
+      placeRivet(rightX, y);
     }
   }
 }
