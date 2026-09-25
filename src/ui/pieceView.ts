@@ -214,20 +214,52 @@ export function drawPieceBase(
       }
       break;
     }
-    case 'paper': {
-      // Thin off-white sheet with a couple of faint horizontal lines.
+    case 'cardboard': {
+      // Kraft-brown box: a lighter seam line where the top flaps meet, a
+      // semi-transparent packing-tape strip down the middle, crease lines
+      // near the top/bottom (flap folds), and a small "this side up" arrow
+      // in darker ink (designer feedback round).
       g.fillStyle(fill, 1);
       g.fillRect(-hw, -hh, wPx, hPx);
-      g.lineStyle(1, stroke, 0.9);
+      g.lineStyle(2, stroke, 1);
       g.strokeRect(-hw, -hh, wPx, hPx);
-      g.lineStyle(1, stroke, 0.4);
-      for (let i = 1; i <= 2; i++) {
-        const y = -hh + (hPx * i) / 3;
+
+      // Flap seam near the top, slightly lighter than the body.
+      g.lineStyle(1.5, 0xdcb98a, 0.8);
+      g.beginPath();
+      g.moveTo(-hw + 3, -hh + hPx * 0.18);
+      g.lineTo(hw - 3, -hh + hPx * 0.18);
+      g.strokePath();
+
+      // Flap-fold crease lines near the top and bottom edges.
+      g.lineStyle(1, stroke, 0.5);
+      for (const y of [-hh + hPx * 0.05, hh - hPx * 0.05]) {
         g.beginPath();
-        g.moveTo(-hw + 3, y);
-        g.lineTo(hw - 3, y);
+        g.moveTo(-hw + 2, y);
+        g.lineTo(hw - 2, y);
         g.strokePath();
       }
+
+      // Packing tape strip down the middle.
+      const tapeW = Math.max(6, wPx * 0.09);
+      g.fillStyle(0xf2e6c9, 0.55);
+      g.fillRect(-tapeW / 2, -hh, tapeW, hPx);
+      g.lineStyle(1, 0xd8cba0, 0.6);
+      g.strokeRect(-tapeW / 2, -hh, tapeW, hPx);
+
+      // Small "this side up" arrow, darker ink, off to one side.
+      const ax = hw * 0.6;
+      const inkColor = 0x6b4a26;
+      g.lineStyle(1.3, inkColor, 0.75);
+      g.beginPath();
+      g.moveTo(ax, hh * 0.35);
+      g.lineTo(ax, -hh * 0.35);
+      g.strokePath();
+      g.beginPath();
+      g.moveTo(ax - 3, -hh * 0.35 + 4);
+      g.lineTo(ax, -hh * 0.35);
+      g.lineTo(ax + 3, -hh * 0.35 + 4);
+      g.strokePath();
       break;
     }
   }

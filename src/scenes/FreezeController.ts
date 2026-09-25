@@ -211,7 +211,6 @@ export class FreezeController {
       baseHalfWM: (x1 - x0) / 2,
       visualPhase: 0,
       nextVisualRedrawMs: 0,
-      flutterPhase: 0,
       lastImpactAt: 0,
       freeze: { phase: 'frozen', ageS: 0, joints: [], meltStepsDone: 0, rotationLocked: true, originXM, originYM, baseStrips: strips },
       extraColliderHandles: colliders.slice(1).map((c) => c.handle),

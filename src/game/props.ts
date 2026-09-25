@@ -24,7 +24,7 @@ export interface MaterialProps {
   grip: number;
   /** how bouncy -> restitution. 0-10. */
   bounce: number;
-  /** how slowly it falls -> extra linear damping while airborne (+ flutter for paper). 0-10. */
+  /** how slowly it falls -> extra linear damping while airborne. 0-10. */
   airDrag: number;
 }
 
@@ -55,18 +55,20 @@ function lerpPoints(x: number, points: ReadonlyArray<readonly [number, number]>)
 }
 
 /**
- * Weight -> Rapier area density. Anchors: paper (W0.5) and polystyrene (W1)
- * far lighter than anything before; wood/jelly/freeze (all W3) compromise
+ * Weight -> Rapier area density. Anchors: polystyrene/cardboard (W1) far
+ * lighter than anything before; wood/jelly/freeze (all W3) compromise
  * around their old 0.8-0.9 density; glass (W5) and stone (W7) close to
  * their old 1.5/2.6; steel (W10) reaches ~5.6 — heavy enough to read as
  * "never gets pushed around" without being so dense Rapier jitters when it
- * rests on a light polystyrene/paper piece (measured empirically, see
- * tests/e2e/materials-v2.spec.ts's steel-on-light-materials case).
+ * rests on a light polystyrene/cardboard piece (measured empirically, see
+ * tests/e2e/materials-v2.spec.ts's steel-on-light-materials case). The
+ * W0.5 point isn't anchored by a current material — kept as a shape point
+ * so the curve stays gentle below W1.
  */
 const WEIGHT_DENSITY: ReadonlyArray<readonly [number, number]> = [
   [0, 0.12],
-  [0.5, 0.18], // paper
-  [1, 0.32], // polystyrene
+  [0.5, 0.18],
+  [1, 0.32], // polystyrene / cardboard
   [3, 0.85], // wood / jelly / freeze
   [5, 1.55], // glass
   [7, 2.6], // stone
@@ -86,7 +88,7 @@ const GRIP_FRICTION: ReadonlyArray<readonly [number, number]> = [
   [0, 0.05],
   [3, 0.25], // glass / steel
   [5, 0.5], // freeze / polystyrene
-  [6, 0.6], // wood / paper
+  [6, 0.6], // wood / cardboard
   [8, 0.8], // stone
   [9, 0.9], // jelly
   [10, 0.95],
@@ -102,7 +104,7 @@ export function gripToFriction(grip: number): number {
  */
 const BOUNCE_RESTITUTION: ReadonlyArray<readonly [number, number]> = [
   [0, 0.01], // stone
-  [1, 0.12], // wood / glass / steel
+  [1, 0.12], // wood / glass / steel / cardboard
   [2, 0.2], // polystyrene
   [6, 0.55], // jelly
   [10, 0.85],
@@ -122,8 +124,8 @@ export function bounceToRestitution(bounce: number): number {
  * this mapping monotonic in bounce (see materials.ts's props.ts import doc).
  */
 const BOUNCE_RESTING_DAMPING: ReadonlyArray<readonly [number, number]> = [
-  [0, 0.03], // stone / freeze / paper
-  [1, 0.05], // wood / glass / steel
+  [0, 0.03], // stone / freeze
+  [1, 0.05], // wood / glass / steel / cardboard
   [2, 0.07], // polystyrene
   [6, 0.4], // jelly
   [10, 0.55],
@@ -136,13 +138,14 @@ export function bounceToRestingDamping(bounce: number): number {
  * Air drag -> EXTRA linear damping applied only while a piece is airborne
  * (on top of restingLinearDamping — see PieceManager). Exactly 0 at
  * airDrag=0, so every material that existed before this system (all
- * airDrag=0) falls exactly as before; polystyrene (D5) and especially
- * paper (D9) fall noticeably slower, per GDD.
+ * airDrag=0) falls exactly as before; polystyrene/cardboard (D5) fall
+ * noticeably slower, per GDD. The D9 point isn't anchored by a current
+ * material — kept as a shape point so the curve keeps climbing toward D10.
  */
 const AIRDRAG_EXTRA_DAMPING: ReadonlyArray<readonly [number, number]> = [
   [0, 0],
-  [5, 1.6], // polystyrene
-  [9, 4.2], // paper
+  [5, 1.6], // polystyrene / cardboard
+  [9, 4.2],
   [10, 5],
 ];
 export function airDragToExtraDamping(airDrag: number): number {
@@ -177,7 +180,7 @@ export function hardnessToAttackMultiplier(hardness: number): number {
 const HARDNESS_TOUGHNESS: ReadonlyArray<readonly [number, number]> = [
   [0, 0.6],
   [1, 0.7], // jelly
-  [2, 0.8], // polystyrene
+  [2, 0.8], // polystyrene / cardboard
   [3, 0.9], // glass — brittle, but its own crack/break thresholds already carry most of that
   [5, 1], // wood — baseline
   [6, 1.05], // freeze

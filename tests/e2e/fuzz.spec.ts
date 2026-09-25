@@ -80,7 +80,7 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-const ALL_MATERIALS: MaterialId[] = ['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'paper', 'freeze'];
+const ALL_MATERIALS: MaterialId[] = ['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'cardboard', 'freeze'];
 
 interface FuzzResult {
   actionsRun: number;

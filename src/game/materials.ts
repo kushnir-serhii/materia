@@ -17,7 +17,7 @@ import {
 } from './props';
 import type { SquashParams } from './squash';
 
-export type MaterialId = 'wood' | 'stone' | 'jelly' | 'glass' | 'steel' | 'polystyrene' | 'paper' | 'freeze';
+export type MaterialId = 'wood' | 'stone' | 'jelly' | 'glass' | 'steel' | 'polystyrene' | 'cardboard' | 'freeze';
 
 export interface MaterialPhysics {
   /** kg / m^2 (Rapier 2D uses area density) */
@@ -92,7 +92,7 @@ export interface FreezeParams {
   iceColors: MaterialColors;
 }
 
-/** Plank shape, meters. Most materials share PLANK_SIZE; paper is a thin sheet (GDD §2: "2.0 x 0.15 m"). */
+/** Plank shape, meters. Every material shares PLANK_SIZE (2.0 x 0.6 m — cardboard included, per designer feedback: "normal box/plank size, not a thin sheet"). */
 export interface MaterialSize {
   width: number;
   height: number;
@@ -117,8 +117,6 @@ export interface Material {
 
 /** Base plank shape, meters. */
 export const PLANK_SIZE: MaterialSize = { width: 2.0, height: 0.6 };
-/** Paper's thin-sheet shape, meters (GDD §2). */
-export const PAPER_SIZE: MaterialSize = { width: 2.0, height: 0.15 };
 
 /**
  * Turns a material's designer-facing props into its Rapier physics values —
@@ -242,7 +240,7 @@ const PROPS: Record<MaterialId, MaterialProps> = {
   jelly: { weight: 3, hardness: 1, grip: 9, bounce: 6, airDrag: 0 },
   glass: { weight: 5, hardness: 3, grip: 3, bounce: 1, airDrag: 0 },
   polystyrene: { weight: 1, hardness: 2, grip: 5, bounce: 2, airDrag: 5 },
-  paper: { weight: 0.5, hardness: 1, grip: 6, bounce: 0, airDrag: 9 },
+  cardboard: { weight: 1, hardness: 2, grip: 6, bounce: 1, airDrag: 5 },
   freeze: { weight: 3, hardness: 6, grip: 5, bounce: 0, airDrag: 0 },
 };
 
@@ -360,19 +358,19 @@ export const MATERIALS: Record<MaterialId, Material> = {
     squash: POLYSTYRENE_SQUASH_PARAMS,
     freeze: FREEZE_PARAMS,
   },
-  paper: {
-    id: 'paper',
-    props: PROPS.paper,
-    physics: physicsFromProps(PROPS.paper),
-    size: PAPER_SIZE,
+  cardboard: {
+    id: 'cardboard',
+    props: PROPS.cardboard,
+    physics: physicsFromProps(PROPS.cardboard),
+    size: PLANK_SIZE,
     colors: {
-      // Off-white with faint lines (pieceView.ts).
-      fill: 0xf3ead9,
-      stroke: 0xd8cbb0,
+      // Kraft-brown cardboard box (pieceView.ts: flap line, tape strip, creases, ink markings).
+      fill: 0xc79a63,
+      stroke: 0x9a713d,
     },
     feel: {
-      sound: 'paper',
-      vibrate: [8],
+      sound: 'cardboard',
+      vibrate: [10],
       shake: 0,
     },
     glass: GLASS_PARAMS,
@@ -404,7 +402,7 @@ export const MATERIALS: Record<MaterialId, Material> = {
 /** Ids in the normal random hook rotation. `freeze` is deliberately excluded
  *  here (GDD §2.1: spawned ~1 in 10 pieces, never as a plain rotation slot)
  *  — see ALL_MATERIAL_IDS for the full set including it. */
-export const MATERIAL_IDS: MaterialId[] = ['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'paper'];
+export const MATERIAL_IDS: MaterialId[] = ['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'cardboard'];
 
 /** Every material id, including the freeze special. */
 export const ALL_MATERIAL_IDS: MaterialId[] = [...MATERIAL_IDS, 'freeze'];

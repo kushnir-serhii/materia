@@ -42,7 +42,7 @@ declare global {
 
 // Not part of the smoke suite's pass/fail contract — just captures reference
 // screenshots of the M0 prototype for docs/screens/.
-test('capture M0 screenshot: mixed tower incl. steel, polystyrene, paper, green jelly, wormy wood', async ({
+test('capture M0 screenshot: mixed tower incl. steel, polystyrene, cardboard, green jelly, wormy wood', async ({
   page,
 }) => {
   await page.goto('/');
@@ -52,17 +52,17 @@ test('capture M0 screenshot: mixed tower incl. steel, polystyrene, paper, green 
   // lands perfectly centered on the one below it — a reliable, non-flaky
   // stack for a reference screenshot. x=5.4m is the platform's world-space
   // center. Order: steel/stone/wormy-wood as a heavy, stable base; the
-  // lighter, more fragile materials (polystyrene, jelly, paper) go on top
-  // so nothing lands on them afterward and squashes/topples/breaks them.
-  // heightM matches each material's actual MaterialSize (paper is thin,
-  // 0.15m — see materials.ts).
+  // lighter, more fragile materials (polystyrene, jelly, cardboard) go on
+  // top so nothing lands on them afterward and squashes/topples/breaks them.
+  // heightM matches each material's actual MaterialSize (all PLANK_SIZE,
+  // 0.6m — see materials.ts).
   const sequence: { m: MaterialId | 'wormy-wood'; heightM: number }[] = [
     { m: 'steel', heightM: 0.6 },
     { m: 'stone', heightM: 0.6 },
     { m: 'wormy-wood', heightM: 0.6 },
     { m: 'polystyrene', heightM: 0.6 },
     { m: 'jelly', heightM: 0.6 },
-    { m: 'paper', heightM: 0.15 },
+    { m: 'cardboard', heightM: 0.6 },
   ];
   let restingYM = 14.7; // first piece's resting center-y (platform top - half piece height)
   for (const entry of sequence) {

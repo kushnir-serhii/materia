@@ -30,7 +30,7 @@ const MATERIAL_NAMES: Record<MaterialId, string> = {
   glass: 'Glass',
   steel: 'Steel',
   polystyrene: 'Polystyrene',
-  paper: 'Paper',
+  cardboard: 'Cardboard',
   freeze: 'Freeze',
 };
 

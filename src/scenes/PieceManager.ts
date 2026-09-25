@@ -81,10 +81,6 @@ const SETTLE_DEPTH_M = 4;
 const SETTLED_ALPHA = 0.82;
 /** Attacker hardness used for a contact whose other side isn't a tracked piece (e.g. resting directly on the static platform) — wood-equivalent, the pre-props baseline. */
 const BASELINE_ATTACKER_HARDNESS = 5;
-/** Paper's airborne sideways flutter (GDD §2: "falls very slowly and flutters side to side"). Small enough it never meaningfully displaces the drop, stops the instant it lands (see the airborne/resting switch). */
-const PAPER_FLUTTER_FREQ_HZ = 2.4;
-const PAPER_FLUTTER_FORCE_N = 0.045;
-const PAPER_FLUTTER_TORQUE = 0.012;
 /** GDD §2.0: ~1 in 6 wood pieces spawn as a "wormy" variant (see worm.ts). */
 const WORMY_WOOD_CHANCE = 1 / 6;
 /** How often (ms) a wormy-wood piece's cheap cosmetic animation (peeking worm) is allowed to redraw — see updateLivingLook. Deliberately coarse, never every frame. */
@@ -141,8 +137,6 @@ export interface PieceRuntime {
   /** Slow phase accumulator for jelly's drifting bubbles / a wormy piece's peeking worm — advanced (and the graphics redrawn) only every LIVING_LOOK_REDRAW_MS, never per frame, per the "cheap" requirement (GDD §2.0). Unused (stays 0) for every other material/variant. */
   visualPhase: number;
   nextVisualRedrawMs: number;
-  /** phase accumulator (radians) for paper's airborne flutter — only advanced/used for material === 'paper'. */
-  flutterPhase: number;
   lastImpactAt: number;
   /** only set for material === 'freeze'; see FreezeController. */
   freeze: FreezeRuntimeState | null;
@@ -164,7 +158,7 @@ export interface PieceRuntime {
    * airborne/resting linear-damping switch in step(). While true, the body
    * runs with material.physics.airborneLinearDamping (set at creation);
    * the moment it lands, this flips false and the body switches to
-   * material.physics.restingLinearDamping so a landed polystyrene/paper
+   * material.physics.restingLinearDamping so a landed polystyrene/cardboard
    * stack still settles and sleeps normally instead of feeling floaty
    * forever.
    */
@@ -295,7 +289,6 @@ export class PieceManager {
       baseHalfWM: halfWM,
       visualPhase: Math.random() * Math.PI * 2,
       nextVisualRedrawMs: 0,
-      flutterPhase: Math.random() * Math.PI * 2,
       lastImpactAt: 0,
       freeze:
         material === 'freeze'
@@ -308,8 +301,8 @@ export class PieceManager {
     };
     this.pieces.set(collider.handle, piece);
     this.piecesById.set(id, piece);
-    // Polystyrene: lock rotation while airborne so it falls smoothly without rotating.
-    if (material === 'polystyrene') {
+    // Polystyrene/cardboard: lock rotation while airborne so they fall smoothly without rotating.
+    if (material === 'polystyrene' || material === 'cardboard') {
       body.lockRotations(true, true);
       body.setAngvel(0, true);
     }
@@ -329,18 +322,6 @@ export class PieceManager {
     for (const [handle, piece] of this.pieces) {
       const v = piece.body.linvel();
       this.preStepSpeed.set(handle, Math.hypot(v.x, v.y));
-    }
-
-    // Paper's airborne flutter (GDD §2: "falls very slowly and flutters
-    // side to side... a gentle rotation wobble while airborne, stops once
-    // resting"). Applied once per logical piece, before the physics step so
-    // it's part of this frame's integration; naturally stops the instant
-    // `airborne` flips false in the contact-force callback below.
-    for (const piece of this.piecesById.values()) {
-      if (piece.material !== 'paper' || !piece.airborne || piece.settled) continue;
-      piece.flutterPhase += dt * PAPER_FLUTTER_FREQ_HZ * Math.PI * 2;
-      piece.body.addForce({ x: Math.sin(piece.flutterPhase) * PAPER_FLUTTER_FORCE_N, y: 0 }, true);
-      piece.body.addTorque(Math.sin(piece.flutterPhase * 0.6 + 1) * PAPER_FLUTTER_TORQUE, true);
     }
 
     const freezingNow = new Set<PieceRuntime>();
@@ -461,13 +442,13 @@ export class PieceManager {
     return damageFactor(attackerHardness, receiverHardness, rawForce);
   }
 
-  /** First-contact transition: switches a piece from its airborne linear damping to its (lower) resting one, so a landed polystyrene/paper stack settles and sleeps normally instead of feeling floaty forever (GDD §2.0). Unlocks rotation for polystyrene. No-op past the first call. */
+  /** First-contact transition: switches a piece from its airborne linear damping to its (lower) resting one, so a landed polystyrene/cardboard stack settles and sleeps normally instead of feeling floaty forever (GDD §2.0). Unlocks rotation for polystyrene/cardboard. No-op past the first call. */
   private landPiece(piece: PieceRuntime): void {
     if (!piece.airborne) return;
     piece.airborne = false;
     piece.body.setLinearDamping(this.materials[piece.material].physics.restingLinearDamping);
-    // Polystyrene: unlock rotation on first contact so it can tip realistically on the tower.
-    if (piece.material === 'polystyrene') {
+    // Polystyrene/cardboard: unlock rotation on first contact so they can tip realistically on the tower.
+    if (piece.material === 'polystyrene' || piece.material === 'cardboard') {
       piece.body.lockRotations(false, true);
     }
     // Steel: its extra airborne gravityScale (GDD §2.0 "falls hard and

@@ -198,11 +198,12 @@ export function playImpactSound(material: MaterialId, force: number): void {
       osc.frequency.exponentialRampToValueAtTime(1400 * pMul, t + 0.08);
       break;
     }
-    case 'paper': {
-      // "Rustle" — filtered noise only, tiny and dry.
-      const g = allocVoice(c, dest, Math.min(volume, 0.4), 0.15);
+    case 'cardboard': {
+      // Hollow cardboard "thump" — a short, low-mid filtered noise burst
+      // (no bright ring, no tone — reads as a soft box, not a plank).
+      const g = allocVoice(c, dest, volume, 0.2);
       if (!g) return;
-      playNoise(c, g, t, 0.13, Math.min(volume, 0.4), 'highpass', 2600, 0.9);
+      playNoise(c, g, t, 0.16, volume * 0.8, 'lowpass', 450 * pMul, 1.1);
       break;
     }
   }

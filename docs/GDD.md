@@ -19,7 +19,7 @@ Session target: 60–120 s per run. One-thumb control.
 
 ## 2. Materials
 
-Units: Rapier meters, 1 m = 50 px. Base piece 2.0 × 0.6 m (paper sheet 2.0 × 0.15 m).
+Units: Rapier meters, 1 m = 50 px. Base piece 2.0 × 0.6 m (every material, cardboard included).
 
 ### 2.0 Material properties (designer scale 0–10)
 
@@ -31,7 +31,7 @@ Every material is described by the same designer-facing properties; code maps th
 | **Hardness** | how much impact/load it takes before it cracks, squashes or dents; also how hard it hits others | break/crack/squash thresholds, damage dealt |
 | **Grip** | how slippery | friction |
 | **Bounce** | how bouncy | restitution |
-| **Air drag** | how slowly it falls | linear damping while airborne (+ flutter for paper) |
+| **Air drag** | how slowly it falls | linear damping while airborne |
 
 | Material | Weight | Hardness | Grip | Bounce | Air drag | Special behaviour | Sound / haptic |
 |---|---|---|---|---|---|---|---|
@@ -41,7 +41,7 @@ Every material is described by the same designer-facing properties; code maps th
 | Jelly | 3 | 1 | 9 | 6 | 0 | bouncy, squash/wobble visual | "boing" |
 | Glass | 5 | 3 (brittle) | 3 | 1 | 0 | cracks → shatters by impact or load | "clink" / "crash" |
 | **Polystyrene** | 1 | 2 | 5 | 2 | 5 | falls slowly; **squashes** under load (compresses in steps down to 50 % height, permanent); steel/stone drop crushes it fast | soft "squeak/crunch" |
-| **Paper** | 0.5 | 1 | 6 | 0 | 9 | thin sheet; falls very slowly and **flutters** side to side; a heavy block landing on it just presses it flat | "rustle", tiny haptic |
+| **Cardboard** | 1 | 2 | 6 | 1 | 5 | box, not a sheet; falls slowly and smoothly, **no rotation**, no flutter; steel/stone drop crushes it fast | hollow "thump", small haptic |
 | Freeze (special) | 3 | 6 | 5 | 0 | 0 | see §2.1 | "splash" → "crackle" |
 | *Rubber (later)* | 3 | 4 | 10 | 8 | 0 | grippy, very bouncy | "squeak" |
 

@@ -40,7 +40,7 @@ declare global {
   }
 }
 
-// Round 7 ("Materials v2": Steel, Polystyrene, Paper, props model, stable
+// Round 7 ("Materials v2": Steel, Polystyrene, Cardboard, props model, stable
 // height HUD) — see docs/GDD.md §2.0.
 
 function collectErrors(page: import('@playwright/test').Page) {
@@ -57,13 +57,13 @@ function collectErrors(page: import('@playwright/test').Page) {
   return { pageErrors, consoleErrors };
 }
 
-test('dropping each new material (steel, polystyrene, paper) produces no errors', async ({ page }) => {
+test('dropping each new material (steel, polystyrene, cardboard) produces no errors', async ({ page }) => {
   const { pageErrors, consoleErrors } = collectErrors(page);
 
   await page.goto('/');
   await page.waitForFunction(() => !!window.__materia, undefined, { timeout: 5000 });
 
-  const materials: MaterialId[] = ['steel', 'polystyrene', 'paper'];
+  const materials: MaterialId[] = ['steel', 'polystyrene', 'cardboard'];
   for (const material of materials) {
     await page.evaluate((m) => {
       window.__materia!.setMaterial(m);
@@ -121,7 +121,7 @@ test('3 stones dropped on polystyrene compress it', async ({ page }) => {
   expect(consoleErrors).toEqual([]);
 });
 
-test('paper falls slower than wood', async ({ page }) => {
+test('cardboard falls slower than wood and sleeps after landing', async ({ page }) => {
   const { pageErrors, consoleErrors } = collectErrors(page);
 
   await page.goto('/');
@@ -143,9 +143,42 @@ test('paper falls slower than wood', async ({ page }) => {
   }
 
   const woodSteps = await stepsToSleep('wood');
-  const paperSteps = await stepsToSleep('paper');
+  const cardboardSteps = await stepsToSleep('cardboard');
 
-  expect(paperSteps).toBeGreaterThan(woodSteps);
+  // Falls slower than wood, but must still land and sleep within the cap
+  // (not float forever) — this doubles as "sleeps after landing".
+  expect(cardboardSteps).toBeGreaterThan(woodSteps);
+  expect(cardboardSteps).toBeLessThan(200);
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+});
+
+test('cardboard falls smoothly without rotating, then settles', async ({ page }) => {
+  const { pageErrors, consoleErrors } = collectErrors(page);
+
+  await page.goto('/');
+  await page.waitForFunction(() => !!window.__materia, undefined, { timeout: 5000 });
+
+  await page.evaluate(() => {
+    window.__materia!.reset();
+    window.__materia!.setMaterial('cardboard');
+    window.__materia!.drop();
+  });
+
+  const pieceId = await page.evaluate(() => window.__materia!.lastDroppedPieceId());
+  expect(pieceId).not.toBeNull();
+
+  // Sample rotation every 0.1s (6 frames at 60Hz) until contact or 1s has passed.
+  let maxAngleDeg = 0;
+  for (let i = 0; i < 10; i++) {
+    await page.evaluate(() => window.__materia!.stepFast(0.1));
+    const angle = await page.evaluate((id) => window.__materia!.pieceRotationDeg(id), pieceId!);
+    if (angle !== null) maxAngleDeg = Math.max(maxAngleDeg, Math.abs(angle));
+  }
+
+  // While airborne, max |angle| must stay below 0.5° (smooth fall, no rotation).
+  expect(maxAngleDeg).toBeLessThan(0.5);
+
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
 });

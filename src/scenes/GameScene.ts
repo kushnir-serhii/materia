@@ -323,7 +323,7 @@ export class GameScene extends Phaser.Scene {
       else this.drop();
     });
     // Dev-picker keys 1-8, in the same order as its 8 swatches
-    // (ALL_MATERIAL_IDS: wood/stone/jelly/glass/steel/polystyrene/paper,
+    // (ALL_MATERIAL_IDS: wood/stone/jelly/glass/steel/polystyrene/cardboard,
     // freeze last — see hud.ts).
     const KEY_NAMES = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT'];
     ALL_MATERIAL_IDS.forEach((id, i) => {

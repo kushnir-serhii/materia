@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { MATERIALS, MATERIAL_IDS, ALL_MATERIAL_IDS, PLANK_SIZE, PAPER_SIZE } from '../../src/game/materials';
+import { MATERIALS, MATERIAL_IDS, ALL_MATERIAL_IDS, PLANK_SIZE } from '../../src/game/materials';
 
 describe('materials', () => {
   it('has the 7 rotation material ids, plus freeze as a special (not in rotation)', () => {
-    expect(MATERIAL_IDS).toEqual(['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'paper']);
-    expect(ALL_MATERIAL_IDS).toEqual(['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'paper', 'freeze']);
+    expect(MATERIAL_IDS).toEqual(['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'cardboard']);
+    expect(ALL_MATERIAL_IDS).toEqual(['wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'cardboard', 'freeze']);
     expect(Object.keys(MATERIALS).sort()).toEqual(
-      ['freeze', 'glass', 'jelly', 'paper', 'polystyrene', 'steel', 'stone', 'wood'].sort(),
+      ['freeze', 'glass', 'jelly', 'cardboard', 'polystyrene', 'steel', 'stone', 'wood'].sort(),
     );
   });
 
@@ -107,11 +107,8 @@ describe('materials', () => {
     expect(PLANK_SIZE.height).toBeCloseTo(0.6);
   });
 
-  it('paper is a thin sheet, not a plank (GDD §2)', () => {
-    expect(MATERIALS.paper.size).toEqual(PAPER_SIZE);
-    expect(PAPER_SIZE.width).toBeCloseTo(2.0);
-    expect(PAPER_SIZE.height).toBeCloseTo(0.15);
-    expect(PAPER_SIZE.height).toBeLessThan(PLANK_SIZE.height);
+  it('cardboard is a normal plank size (GDD §2.0), not a thin sheet', () => {
+    expect(MATERIALS.cardboard.size).toEqual(PLANK_SIZE);
   });
 
   it('steel is the heaviest, hardest, most-shake material and never breaks like glass', () => {
@@ -123,20 +120,22 @@ describe('materials', () => {
     expect(MATERIALS.steel.physics.friction).toBeLessThan(MATERIALS.wood.physics.friction);
   });
 
-  it('polystyrene and paper are far lighter than wood and fall slower (more airborne damping)', () => {
+  it('polystyrene and cardboard are far lighter than wood and fall slower (more airborne damping)', () => {
     expect(MATERIALS.polystyrene.physics.density).toBeLessThan(MATERIALS.wood.physics.density);
-    expect(MATERIALS.paper.physics.density).toBeLessThan(MATERIALS.polystyrene.physics.density);
+    expect(MATERIALS.cardboard.physics.density).toBeLessThan(MATERIALS.wood.physics.density);
     expect(MATERIALS.polystyrene.physics.airborneLinearDamping).toBeGreaterThan(
       MATERIALS.wood.physics.airborneLinearDamping,
     );
-    expect(MATERIALS.paper.physics.airborneLinearDamping).toBeGreaterThan(
-      MATERIALS.polystyrene.physics.airborneLinearDamping,
+    expect(MATERIALS.cardboard.physics.airborneLinearDamping).toBeGreaterThan(
+      MATERIALS.wood.physics.airborneLinearDamping,
     );
     // Once resting, both settle back down near the baseline (not floaty forever).
     expect(MATERIALS.polystyrene.physics.restingLinearDamping).toBeLessThan(
       MATERIALS.polystyrene.physics.airborneLinearDamping,
     );
-    expect(MATERIALS.paper.physics.restingLinearDamping).toBeLessThan(MATERIALS.paper.physics.airborneLinearDamping);
+    expect(MATERIALS.cardboard.physics.restingLinearDamping).toBeLessThan(
+      MATERIALS.cardboard.physics.airborneLinearDamping,
+    );
   });
 
   it("wood/stone/jelly/glass/freeze keep ~their pre-props physics values (props.ts's derivation is a compromise, documented per-property)", () => {
