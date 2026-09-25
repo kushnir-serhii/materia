@@ -3,8 +3,9 @@ import { PX_PER_M } from '../physics/physics';
 import { MATERIALS, MATERIAL_IDS, PLANK_SIZE, cloneMaterialsForRuntime, type Material, type MaterialId } from '../game/materials';
 import { drawPieceBase } from '../ui/pieceView';
 import { drawBackground } from '../ui/background';
-import { Hud, HUD_BUTTON_ZONE_TOP } from '../ui/hud';
+import { Hud } from '../ui/hud';
 import { DebugPanel } from '../ui/debugPanel';
+import { getSafeAreaBottomPx } from '../ui/safeArea';
 import {
   loadBestHeight,
   saveBestHeight,
@@ -71,6 +72,12 @@ const CAMERA_LERP_DOWN = 0.04;
  *  would bounce the camera too. */
 const CAMERA_DOWN_DELAY_S = 0.5;
 const VIEW_TOP_FRACTION = 0.4;
+/** With the bottom material-button row gone, the platform can sit much
+ *  closer to the true bottom edge than before — this is the designer's
+ *  requested margin (plus the device's safe-area inset, e.g. a gesture
+ *  bar) between the platform's bottom edge and the screen's bottom edge
+ *  whenever there's no tall tower pushing the view up. */
+const PLATFORM_BOTTOM_MARGIN_PX = 60;
 
 declare global {
   interface Window {
@@ -98,6 +105,11 @@ declare global {
       resetFxImpactCount: () => void;
       /** True once every current piece has gone to sleep. */
       allSleeping: () => boolean;
+      /** The dev-panel wrench button's actual on-screen center (px), for
+       *  e2e tests to click without guessing text-metrics pixel widths. */
+      hudWrenchCenter: () => { x: number; y: number };
+      /** Whether the dev material-picker panel is currently open. */
+      hudDevPanelOpen: () => boolean;
     };
   }
 }
@@ -130,6 +142,9 @@ export class GameScene extends Phaser.Scene {
   private initialScrollY = 0;
   private camScrollY = 0;
   private camTargetY = 0;
+  /** Resting scrollY (platform's bottom margin from the screen's bottom
+   *  edge) — see its computation in create() and use in updateCamera. */
+  private restScrollY = 0;
   /** how long the tower has continuously been shorter than the camera's
    *  current target, for the CAMERA_DOWN_DELAY_S debounce (see updateCamera). */
   private towerLowerSinceS = 0;
@@ -190,7 +205,17 @@ export class GameScene extends Phaser.Scene {
       )
       .setStrokeStyle(2, 0x4a4f5c);
 
-    this.initialScrollY = platformCenterYPx - SCREEN_H * 0.85;
+    // The camera's "resting" position: the platform's bottom edge sits
+    // PLATFORM_BOTTOM_MARGIN_PX (plus the device safe-area inset) above the
+    // screen's bottom edge. This is both the starting view (before any
+    // piece lands) and the floor updateCamera clamps to, so an empty or
+    // short tower always uses the space freed by removing the old bottom
+    // button row instead of the view staying pinned tight on the platform.
+    const platformBottomM = GROUND_CENTER_Y_M + PLATFORM_HALF_HEIGHT_M;
+    const safeAreaBottomPx = getSafeAreaBottomPx();
+    this.restScrollY =
+      platformBottomM * PX_PER_M - (SCREEN_H - PLATFORM_BOTTOM_MARGIN_PX - safeAreaBottomPx);
+    this.initialScrollY = this.restScrollY;
     this.camScrollY = this.initialScrollY;
     this.camTargetY = this.initialScrollY;
     this.cameras.main.scrollY = this.camScrollY;
@@ -225,7 +250,7 @@ export class GameScene extends Phaser.Scene {
         this.doReset();
         return;
       }
-      if (pointer.y >= HUD_BUTTON_ZONE_TOP) return;
+      if (this.hud.isPointerOverUI(pointer.x, pointer.y)) return;
       this.drop();
     });
 
@@ -266,7 +291,7 @@ export class GameScene extends Phaser.Scene {
       reset: () => this.doReset(),
       stepFast: (seconds) => {
         const steps = Math.round(seconds * 60);
-        for (let i = 0; i < steps; i++) this.frameTick(1 / 60);
+        for (let i = 0; i < steps; i++) this.safeFrameTick(1 / 60);
       },
       spawn: (material, xMeters, yMeters) => {
         this.pieceManager.spawn(material, xMeters, yMeters);
@@ -283,13 +308,50 @@ export class GameScene extends Phaser.Scene {
       fxImpactCount: () => getImpactFxCount(),
       resetFxImpactCount: () => resetImpactFxCount(),
       allSleeping: () => this.pieceManager.allSleeping(),
+      hudWrenchCenter: () => this.hud.wrenchCenter(),
+      hudDevPanelOpen: () => this.hud.isDevPanelOpen(),
     };
   }
 
   update(_time: number, delta: number): void {
     if (this.gameOver) return;
     const dt = Math.min(delta / 1000, 1 / 30);
-    this.frameTick(dt);
+    this.safeFrameTick(dt);
+  }
+
+  /**
+   * Safety net (playtest crash: an uncaught exception mid-frame — a Rapier
+   * WASM panic from a stale joint handle was the actual bug, now fixed at
+   * the source in FreezeController/PieceManager — left the update loop
+   * dead and the player stuck with every piece gone and no way to drop
+   * another). Any *other* unforeseen error during a frame is now caught
+   * here rather than silently killing future update() calls: it's logged
+   * with its stack, the game state is reset the same way tapping "restart"
+   * does, and the player sees a small toast instead of a frozen board.
+   */
+  private safeFrameTick(dt: number): void {
+    try {
+      this.frameTick(dt);
+    } catch (err) {
+      this.handleFatalError(err);
+    }
+  }
+
+  private handleFatalError(err: unknown): void {
+    // eslint-disable-next-line no-console
+    console.error('[materia] recovered from an error in the game loop:', err instanceof Error ? (err.stack ?? err.message) : err);
+    try {
+      this.doReset();
+    } catch (resetErr) {
+      // eslint-disable-next-line no-console
+      console.error('[materia] recovery reset itself failed:', resetErr);
+    }
+    try {
+      this.hud.showToast('Oops — restarted');
+    } catch {
+      // Nothing more we can do if even the toast fails — the reset above
+      // already ran, so the player can keep playing either way.
+    }
   }
 
   private frameTick(dt: number): void {
@@ -329,12 +391,19 @@ export class GameScene extends Phaser.Scene {
    * piece that has slid off the platform edge (resting, but below platform
    * level, still short of the fail line/FAIL_MARGIN_M) must never read as
    * "taller" than the platform itself, or it drags desiredScrollY past a
-   * safe bound and shoves the platform down behind the bottom button bar —
+   * safe bound and shoves the platform down past the screen's bottom edge —
    * this is the camera "overshooting downward". With this clamp,
    * desiredScrollY's largest possible value keeps the platform's own top
-   * framed at VIEW_TOP_FRACTION (well clear of HUD_BUTTON_ZONE_TOP), same as
-   * an empty/just-started tower, so the tower top is always shown at about
-   * VIEW_TOP_FRACTION from the top and never lower on screen than that.
+   * framed at VIEW_TOP_FRACTION, so once any piece is resting the tower top
+   * is always shown at about VIEW_TOP_FRACTION from the top and never lower
+   * on screen than that (see maxScrollY below) — unchanged by the bottom
+   * button row's removal.
+   *
+   * Only the *no-tower* view (nothing resting at all: game start, or right
+   * after everything's cleared) uses the freed-up space instead: restScrollY
+   * (see create()) sits the platform's own bottom edge just
+   * PLATFORM_BOTTOM_MARGIN_PX above the screen's bottom edge — closer to it
+   * than the old bottom button row ever allowed.
    *
    * Moving down is debounced (CAMERA_DOWN_DELAY_S) and lerped more slowly
    * (CAMERA_LERP_DOWN) than moving up, so a momentary dip while a tower
@@ -373,18 +442,22 @@ export class GameScene extends Phaser.Scene {
         this.cameraGoingDown = false;
       }
     } else {
-      // Nothing resting (empty board) — go straight back to the start view.
+      // Nothing resting (empty board) — go straight back to the low,
+      // freed-space "rest" view (see restScrollY / the class doc above).
       this.currentHeightM = 0;
-      this.camTargetY = this.initialScrollY;
+      this.camTargetY = this.restScrollY;
       this.towerLowerSinceS = 0;
       this.cameraGoingDown = false;
       this.hadTower = false;
     }
 
-    // Belt-and-suspenders on top of the referenceTopM clamp above: the
-    // target can never ask to frame the platform's own top any lower than
-    // VIEW_TOP_FRACTION, so it (and by extension the button row below it)
-    // can never overshoot down into HUD_BUTTON_ZONE_TOP.
+    // Belt-and-suspenders on top of the referenceTopM clamp above: once any
+    // piece is resting, the target can never ask to frame the platform's own
+    // top any lower than VIEW_TOP_FRACTION, so it can never overshoot down
+    // into (or past) the screen's bottom edge. The no-tower view already
+    // uses restScrollY directly (see the topM === null branch above), and
+    // restScrollY is always <= this bound (it sits lower on screen, using
+    // the freed-up space), so this min() never pulls it back up.
     const maxScrollY = this.platformTopY * PX_PER_M - VIEW_TOP_FRACTION * SCREEN_H;
     this.camTargetY = Math.min(this.camTargetY, maxScrollY);
 

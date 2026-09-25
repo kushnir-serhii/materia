@@ -283,9 +283,19 @@ export class PieceManager {
     return n;
   }
 
+  /** Removes a piece from the world without fx (used by FreezeController when ice fully melts). */
+  removePiece(piece: PieceRuntime): void {
+    this.destroy(piece, false);
+  }
+
   private destroy(piece: PieceRuntime, shatterFx: boolean): void {
     const x = piece.container.x;
     const y = piece.container.y;
+    // Must run before removeBody, and for every piece (not just frozen
+    // ones): this piece may be the *glued* side of another piece's ice —
+    // see FreezeController.purgeJointsTo's doc for why leaving this out is
+    // the "everything disappears" crash.
+    this.freezeController.purgeJointsTo(piece);
     if (piece.freeze) this.freezeController.releaseJoints(piece);
     this.rapierWorld.removeBody(piece.body);
     this.pieces.delete(piece.collider.handle);

@@ -132,7 +132,18 @@ export class PhysicsWorld {
     return { body, collider };
   }
 
+  /**
+   * Removes a rigid body — and, per Rapier, every collider and impulse joint
+   * still attached to it. A no-op (not a crash) if it's already gone: a
+   * caller can end up with the same body queued for removal twice (e.g. a
+   * piece fails off the platform the same frame something else removes it),
+   * and Rapier's WASM panics ("unreachable") on an operation against an
+   * already-removed handle rather than raising a catchable JS error —
+   * `isValid()` is the only way to check first instead of finding out via a
+   * crash that poisons the whole physics world.
+   */
   removeBody(body: RAPIER.RigidBody): void {
+    if (!body.isValid()) return;
     this.world.removeRigidBody(body);
   }
 
@@ -165,7 +176,9 @@ export class PhysicsWorld {
     return this.world.createCollider(colliderDesc, body);
   }
 
+  /** No-op if already removed — see removeBody's doc for why that check matters here. */
   removeCollider(collider: RAPIER.Collider): void {
+    if (!collider.isValid()) return;
     this.world.removeCollider(collider, true);
   }
 
@@ -205,7 +218,16 @@ export class PhysicsWorld {
     return this.world.createImpulseJoint(desc, body1, body2, true);
   }
 
+  /**
+   * No-op if already removed. This is the specific guard the crash report
+   * pointed at: removeRigidBody() also silently drops every impulse joint
+   * attached to that body, so a joint FreezeController is still holding a
+   * reference to (e.g. the glued piece on the other end fell off/shattered
+   * and was removed first) is already gone by the time melt or a
+   * force-break tries to remove it again — see removeBody's doc.
+   */
   removeImpulseJoint(joint: RAPIER.ImpulseJoint): void {
+    if (!joint.isValid()) return;
     this.world.removeImpulseJoint(joint, true);
   }
 

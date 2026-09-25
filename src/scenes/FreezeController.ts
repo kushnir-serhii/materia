@@ -256,6 +256,36 @@ export class FreezeController {
     this.activeIcePieces.delete(piece);
   }
 
+  /**
+   * Root cause of the "everything disappears" crash: removing a rigid body
+   * in Rapier also removes every impulse joint attached to it, on BOTH
+   * ends — but only the ice side of a glue joint keeps a JS reference to it
+   * (icePiece.freeze.joints). If the *other*, non-ice piece it's glued to
+   * gets destroyed first (falls off the platform, glass shatters, …), that
+   * reference goes stale the moment PieceManager removes its body: Rapier
+   * has already forgotten the joint, but FreezeController hasn't, and the
+   * next time melt or a force-break walks that piece's joints and calls
+   * removeImpulseJoint() on it, that's a stale handle.
+   *
+   * PieceManager.destroy() must call this for *every* piece it's about to
+   * remove (not just frozen ones — the removed piece is usually the glued
+   * *other* side, not the ice), and before the body actually goes, so the
+   * joint is still valid to explicitly remove and forget here.
+   */
+  purgeJointsTo(removedPiece: PieceRuntime): void {
+    const handles = new Set<number>([removedPiece.collider.handle, ...removedPiece.extraColliderHandles]);
+    for (const icePiece of this.activeIcePieces) {
+      if (icePiece === removedPiece || !icePiece.freeze) continue;
+      for (let i = icePiece.freeze.joints.length - 1; i >= 0; i--) {
+        const gj = icePiece.freeze.joints[i];
+        if (handles.has(gj.otherColliderHandle)) {
+          this.pm.rapierWorld.removeImpulseJoint(gj.joint);
+          icePiece.freeze.joints.splice(i, 1);
+        }
+      }
+    }
+  }
+
   /** Per-frame upkeep for every frozen ice piece: break overloaded glue joints, advance melt. */
   update(dt: number, frameForce: Map<number, number>): void {
     const breakForce = this.materials.freeze.freeze.glueBreakForce;
@@ -324,8 +354,15 @@ export class FreezeController {
       newColliders.push(this.pm.rapierWorld.addBoxCollider(piece.body, iceMaterial, localX, localTop + halfH, width / 2, halfH));
       scaledStrips.push({ xCenter: f.originXM + localX, width, top: f.originYM + localTop, bottom: f.originYM + localBottom });
     }
-    if (newColliders.length === 0) {
+    if (f.meltStepsDone >= MELT_STEPS) {
+      // Final melt step: remove the ice piece entirely via the normal piece-removal
+      // path, which already purges joints and doesn't count as a lost heart.
       f.phase = 'melted';
+      this.pm.removePiece(piece);
+      return;
+    }
+    if (newColliders.length === 0) {
+      // No colliders could be built (degenerate shrink), but not final step yet.
       return;
     }
     piece.collider = newColliders[0];
@@ -338,6 +375,5 @@ export class FreezeController {
       const gj = f.joints.shift();
       if (gj) this.pm.rapierWorld.removeImpulseJoint(gj.joint);
     }
-    if (f.meltStepsDone >= MELT_STEPS) f.phase = 'melted';
   }
 }

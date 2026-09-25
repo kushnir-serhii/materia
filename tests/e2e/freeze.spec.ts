@@ -21,6 +21,8 @@ declare global {
       fxImpactCount: () => number;
       resetFxImpactCount: () => void;
       allSleeping: () => boolean;
+      hudWrenchCenter: () => { x: number; y: number };
+      hudDevPanelOpen: () => boolean;
     };
   }
 }
@@ -150,6 +152,8 @@ test('an undisturbed ice block fully unglues within 1 minute (meltStart 30s + me
 
   const jointsRightAfterFreeze = await page.evaluate(() => window.__materia!.jointCount());
   expect(jointsRightAfterFreeze).toBeGreaterThan(0);
+  const iceCountRightAfterFreeze = await page.evaluate(() => window.__materia!.countByMaterial('freeze'));
+  expect(iceCountRightAfterFreeze).toBe(1);
 
   // Just before meltStartS (30s) the glue must still be fully intact.
   await page.evaluate(() => window.__materia!.stepFast(27));
@@ -157,9 +161,11 @@ test('an undisturbed ice block fully unglues within 1 minute (meltStart 30s + me
   expect(jointsBeforeMeltStart).toBe(jointsRightAfterFreeze);
 
   // Well past meltStartS + meltDurationS (30s + 30s = 60s total) every glue
-  // joint must be gone.
+  // joint must be gone and the ice piece must have disappeared completely.
   await page.evaluate(() => window.__materia!.stepFast(36));
   const jointsAfterAMinute = await page.evaluate(() => window.__materia!.jointCount());
   expect(jointsAfterAMinute).toBe(0);
+  const iceCountAfterAMinute = await page.evaluate(() => window.__materia!.countByMaterial('freeze'));
+  expect(iceCountAfterAMinute).toBe(0);
   expect(pageErrors).toEqual([]);
 });

@@ -40,7 +40,7 @@ Units: Rapier meters, 1 m = 50 px. Base piece 2.0 × 0.6 m.
 | Land | probe surface below at ~10 columns across its width; fill gaps up to one **flat top line** (volume-conserving: bigger gaps → lower line) |
 | Freeze | 0.3 s frost effect → becomes one solid body (strip boxes compound collider) |
 | Glue | fixed joints to every body it touches; joint breaks if impact force > breakForce (≈ stone 3 m drop) |
-| Melt | whole block melts within 1 minute: at 30 s glue starts weakening (joints removed one by one over the next 30 s) and the ice shrinks 30%; fully unglued/gone by 60 s |
+| Melt | whole block melts within 1 minute: at 30 s glue starts weakening (joints removed one by one over the next 30 s) and the ice shrinks; fully unglued/gone by 60 s |
 | Spawn | never player-chosen: ~1 in 10 pieces, or reward for 3 perfect drops |
 
 Other specials to consider later: balloon (lifts), TNT (3 s fuse unless covered), honey (sticky top), foam (grows 2×), magnet, sand bag.

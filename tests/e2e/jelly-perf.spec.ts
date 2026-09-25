@@ -21,6 +21,8 @@ declare global {
       fxImpactCount: () => number;
       resetFxImpactCount: () => void;
       allSleeping: () => boolean;
+      hudWrenchCenter: () => { x: number; y: number };
+      hudDevPanelOpen: () => boolean;
     };
   }
 }
