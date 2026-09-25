@@ -23,6 +23,11 @@ declare global {
       allSleeping: () => boolean;
       hudWrenchCenter: () => { x: number; y: number };
       hudDevPanelOpen: () => boolean;
+      removals: () => { id: number; material: MaterialId; reason: 'fell' | 'shatter' | 'melt' | 'froze' | 'reset' | 'error' | 'culled'; ageMs: number; at: number }[];
+      lastDroppedPieceId: () => number | null;
+      pieceExists: (id: number) => boolean;
+      dynamicPieceCount: () => number;
+      settledPieceCount: () => number;
     };
   }
 }

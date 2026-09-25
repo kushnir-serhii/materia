@@ -49,8 +49,23 @@ export type FreezePhase = 'falling' | 'frozen' | 'melted';
 
 export interface FreezeGlueJoint {
   joint: RAPIER.ImpulseJoint;
-  /** the glued piece's primary collider handle, used to read this frame's impact force on it. */
-  otherColliderHandle: number;
+  /**
+   * The glued piece's stable id (PieceRuntime.id) — NOT its collider
+   * handle. A collider handle can change for the piece it refers to (its
+   * own melt steps rebuild its colliders under new handles; the handle
+   * this joint was glued to can even be *recycled* by Rapier for a
+   * completely unrelated, freshly-spawned piece the moment it's freed).
+   * The playtest bug ("a freshly dropped piece just vanishes, every drop
+   * from then on") was exactly this: an ice piece glued to a neighbouring
+   * ice piece stored the neighbour's collider handle at glue time; once the
+   * neighbour's own melt reassigned its colliders to new handles, the old
+   * handle number was later handed to a brand-new dropped piece, and
+   * purgeJointsTo's handle-based match treated that innocent new piece as
+   * "the glued piece being removed" and tore it out. Piece ids never get
+   * reassigned or recycled, so a lookup by id (see PieceManager.piecesById)
+   * can never collide with an unrelated piece like this.
+   */
+  otherPieceId: number;
 }
 
 export interface FreezeRuntimeState {
@@ -138,9 +153,14 @@ export class FreezeController {
     this.lastStrips = strips;
 
     // Remove the falling water-blob body/piece — it's replaced entirely by
-    // the new compound ice body below.
+    // the new compound ice body below. Goes through PieceManager's own
+    // removal bookkeeping (piecesById, removals()) with reason 'froze' so
+    // it's accounted for the same way any other removal is, just excluded
+    // from the "removed too young" warning (see PieceManager.logRemoval).
     this.pm.rapierWorld.removeBody(fallingPiece.body);
     this.pm.pieces.delete(fallingPiece.collider.handle);
+    this.pm.piecesById.delete(fallingPiece.id);
+    this.pm.logRemoval(fallingPiece, 'froze');
     fallingPiece.container.destroy();
 
     if (strips.length === 0) return; // nothing to fill onto (degenerate landing range)
@@ -188,8 +208,11 @@ export class FreezeController {
       lastImpactAt: 0,
       freeze: { phase: 'frozen', ageS: 0, joints: [], meltStepsDone: 0, rotationLocked: true, originXM, originYM, baseStrips: strips },
       extraColliderHandles: colliders.slice(1).map((c) => c.handle),
+      spawnedAtMs: performance.now(),
+      settled: false,
     };
     for (const c of colliders) this.pm.pieces.set(c.handle, icePiece);
+    this.pm.piecesById.set(icePiece.id, icePiece);
     this.activeIcePieces.add(icePiece);
 
     fxFreezeSolidify(container.x, container.y, wPx);
@@ -245,7 +268,7 @@ export class FreezeController {
     // glued pose, and read real impacts from the *other* neighbours/floor
     // `other` is still touching normally.
     joint.setContactsEnabled(false);
-    icePiece.freeze.joints.push({ joint, otherColliderHandle: other.collider.handle });
+    icePiece.freeze.joints.push({ joint, otherPieceId: other.id });
   }
 
   /** Removes every glue joint this piece has (does not touch its colliders/body). */
@@ -273,12 +296,11 @@ export class FreezeController {
    * joint is still valid to explicitly remove and forget here.
    */
   purgeJointsTo(removedPiece: PieceRuntime): void {
-    const handles = new Set<number>([removedPiece.collider.handle, ...removedPiece.extraColliderHandles]);
     for (const icePiece of this.activeIcePieces) {
       if (icePiece === removedPiece || !icePiece.freeze) continue;
       for (let i = icePiece.freeze.joints.length - 1; i >= 0; i--) {
         const gj = icePiece.freeze.joints[i];
-        if (handles.has(gj.otherColliderHandle)) {
+        if (gj.otherPieceId === removedPiece.id) {
           this.pm.rapierWorld.removeImpulseJoint(gj.joint);
           icePiece.freeze.joints.splice(i, 1);
         }
@@ -295,7 +317,8 @@ export class FreezeController {
       if (piece.freeze.ageS >= GLUE_GRACE_PERIOD_S) {
         for (let i = piece.freeze.joints.length - 1; i >= 0; i--) {
           const gj = piece.freeze.joints[i];
-          const force = frameForce.get(gj.otherColliderHandle) ?? 0;
+          const other = this.pm.piecesById.get(gj.otherPieceId);
+          const force = other ? this.maxFrameForce(other, frameForce) : 0;
           if (force >= breakForce) {
             this.pm.rapierWorld.removeImpulseJoint(gj.joint);
             piece.freeze.joints.splice(i, 1);
@@ -311,6 +334,13 @@ export class FreezeController {
       }
       this.updateMelt(piece);
     }
+  }
+
+  /** Largest of this frame's contact force across all of `piece`'s current colliders — frameForce is keyed by (this-frame-valid) collider handle, so this always reads the piece's *current* colliders, not whatever handle it had when a joint referencing it was created. */
+  private maxFrameForce(piece: PieceRuntime, frameForce: Map<number, number>): number {
+    let f = frameForce.get(piece.collider.handle) ?? 0;
+    for (const h of piece.extraColliderHandles) f = Math.max(f, frameForce.get(h) ?? 0);
+    return f;
   }
 
   private updateMelt(piece: PieceRuntime): void {
@@ -341,6 +371,21 @@ export class FreezeController {
     for (let i = 0; i < oldColliderCount; i++) oldColliders.push(piece.body.collider(i));
     for (const c of oldColliders) this.pm.rapierWorld.removeCollider(c);
 
+    if (f.meltStepsDone >= MELT_STEPS) {
+      // Final melt step: the piece is going away entirely, so there's no
+      // point building one more (immediately-discarded) round of colliders
+      // for it — just remove it via the normal piece-removal path, which
+      // already purges joints and doesn't count as a lost heart. (Building
+      // them anyway and only updating piece.collider/extraColliderHandles
+      // afterward used to leave those pointing at the just-removed *old*
+      // colliders' handles for the purgeJointsTo() call inside removePiece
+      // — harmless with today's id-keyed joint lookups, but pointless work
+      // and a foot-gun for the next handle-keyed piece of state.)
+      f.phase = 'melted';
+      this.pm.removePiece(piece);
+      return;
+    }
+
     const iceMaterial = this.materials.freeze;
     const newColliders: RAPIER.Collider[] = [];
     const scaledStrips: FreezeStrip[] = [];
@@ -353,13 +398,6 @@ export class FreezeController {
       if (halfH <= 0 || width <= 0) continue;
       newColliders.push(this.pm.rapierWorld.addBoxCollider(piece.body, iceMaterial, localX, localTop + halfH, width / 2, halfH));
       scaledStrips.push({ xCenter: f.originXM + localX, width, top: f.originYM + localTop, bottom: f.originYM + localBottom });
-    }
-    if (f.meltStepsDone >= MELT_STEPS) {
-      // Final melt step: remove the ice piece entirely via the normal piece-removal
-      // path, which already purges joints and doesn't count as a lost heart.
-      f.phase = 'melted';
-      this.pm.removePiece(piece);
-      return;
     }
     if (newColliders.length === 0) {
       // No colliders could be built (degenerate shrink), but not final step yet.

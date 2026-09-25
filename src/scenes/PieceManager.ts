@@ -33,7 +33,55 @@ const IMPACT_DEBOUNCE_MS = 250;
  */
 const IMPACT_MIN_SPEED_MPS = 0.6;
 const SLOW_VELOCITY_THRESHOLD = 0.05;
-const MAX_PIECES = 40; // GDD perf budget
+const MAX_REMOVAL_LOG = 20;
+/**
+ * Any non-'reset'/'froze'/'culled' removal of a piece younger than this is
+ * logged as a warning — it's the symptom of the "dropped piece just
+ * vanishes" playtest bug (a stale, handle-based cross-piece reference
+ * misfiring on an unrelated, freshly-spawned piece that happened to reuse a
+ * recycled collider handle number). 'reset'/'froze'/'culled' are excluded
+ * because they're legitimately fast by design (a manual/error reset can
+ * happen the instant after a drop; a freeze piece "removes" itself and is
+ * replaced by its ice body within its very first physics step; a cull under
+ * extreme chaos can by design reach a piece that only just spawned).
+ */
+const YOUNG_REMOVAL_WARN_MS = 1500;
+/**
+ * Piece-budget policy (CLAUDE.md: "≤ 40 dynamic bodies", but a long-running
+ * tower must never hit a hard "spawn refused" wall — see spawn()/
+ * maintainPieceBudget()). Once the *dynamic* body count exceeds this, the
+ * lowest resting pieces well below the current tower top are converted to
+ * fixed (static) bodies — cheap "permanent scenery" that keeps its visuals
+ * but no longer simulates, generates fx, or counts toward this budget. If
+ * that alone can't bring the count back down (nothing down there is resting
+ * — mid-collapse chaos), the lowest pieces are forcibly removed instead
+ * (reason 'culled') so spawn() never has to refuse.
+ */
+const DYNAMIC_PIECE_BUDGET = 30;
+/** A resting piece must be at least this far (meters) below the current tower top before it's eligible to settle — keeps the *visible* part of the tower (and anything the player might still interact with) fully dynamic. */
+const SETTLE_DEPTH_M = 4;
+/** Settled pieces are dimmed slightly to read as "locked in" — subtle, not a strong visual change. */
+const SETTLED_ALPHA = 0.82;
+
+/** Why a piece was removed — every removal goes through PieceManager.destroy()/logRemoval() so this is always recorded (see removals()/window.__materia.removals()). */
+export type RemovalReason =
+  | 'fell' // crossed the fail line (off the platform / off the bottom of the world)
+  | 'shatter' // glass, sustained/impact overload
+  | 'melt' // freeze's final melt step
+  | 'froze' // a falling freeze piece converted into its compound ice body (not a loss — id changes)
+  | 'reset' // manual or error-recovery reset cleared the board
+  | 'error' // removed while recovering from an uncaught error mid-frame
+  | 'culled'; // piece-budget policy forcibly removed it (see DYNAMIC_PIECE_BUDGET) because nothing was resting/settleable
+
+export interface RemovalRecord {
+  id: number;
+  material: MaterialId;
+  reason: RemovalReason;
+  /** ms between spawn and removal. */
+  ageMs: number;
+  /** performance.now() at removal. */
+  at: number;
+}
 
 export interface PieceRuntime {
   id: number;
@@ -56,6 +104,17 @@ export interface PieceRuntime {
   freeze: FreezeRuntimeState | null;
   /** extra collider handles (beyond `collider`) also mapped to this piece in `pieces`, for a frozen ice piece's compound body. */
   extraColliderHandles: number[];
+  /** performance.now() when this PieceRuntime was created (see RemovalRecord.ageMs). */
+  spawnedAtMs: number;
+  /**
+   * True once the piece-budget policy has converted this piece's body to a
+   * fixed (static) Rapier body (see DYNAMIC_PIECE_BUDGET/maintainPieceBudget).
+   * A settled piece keeps its visuals and its PieceRuntime entry (it can
+   * still be a glue-joint target's `otherPieceId`, though its own joints are
+   * released) but no longer simulates, reports contact forces, gets fx, or
+   * counts toward the dynamic-body budget.
+   */
+  settled: boolean;
 }
 
 export type ImpactCallback = (
@@ -69,6 +128,17 @@ export type ImpactCallback = (
 export class PieceManager {
   readonly rapierWorld: PhysicsWorld;
   readonly pieces = new Map<number, PieceRuntime>(); // keyed by collider handle (a frozen ice piece has one entry per strip collider)
+  /**
+   * Keyed by the piece's own stable id (never changes across its lifetime,
+   * unlike a Rapier collider handle — see RemovalReason's "froze"/'melt'
+   * cases and FreezeController's glue joints). Any per-piece record that
+   * must survive more than one frame (e.g. FreezeGlueJoint) should
+   * reference a piece by this id and look it up here, never by a raw
+   * collider handle: Rapier recycles freed handle numbers for the next
+   * created collider/body, so a handle stored across frames can silently
+   * start pointing at a completely unrelated piece.
+   */
+  readonly piecesById = new Map<number, PieceRuntime>();
   readonly freezeController: FreezeController;
   private nextId = 1;
   private frameForce = new Map<number, number>();
@@ -76,6 +146,7 @@ export class PieceManager {
    *  collider handle — reused every frame (see IMPACT_MIN_SPEED_MPS) rather
    *  than allocated fresh, per the no-per-frame-allocations rule. */
   private preStepSpeed = new Map<number, number>();
+  private removalLog: RemovalRecord[] = [];
 
   /** Physics/glass values pieces are spawned with. Defaults to the canonical MATERIALS; GameScene swaps in a runtime-mutable clone under `?debug=1` so the tuning panel's sliders affect newly spawned pieces without touching MATERIALS itself. */
   private materials: Record<MaterialId, Material>;
@@ -97,7 +168,15 @@ export class PieceManager {
   }
 
   spawn(material: MaterialId, xM: number, yM: number): PieceRuntime | null {
-    if (this.pieces.size >= MAX_PIECES) return null;
+    // spawn() must ALWAYS succeed — a long-running tower (round-6 playtest
+    // follow-up) must never hit a hard "drop refused" dead end. The old
+    // MAX_PIECES hard cap here (checked, worse, against `pieces.size` — a
+    // *collider*-handle count inflated by a frozen ice piece's up to
+    // FREEZE_COLUMNS=11 strip colliders) was the round-5 "every drop just
+    // vanishes" bug's root cause. It's replaced by maintainPieceBudget(),
+    // called at the end of every step(): once the *dynamic* body count
+    // exceeds DYNAMIC_PIECE_BUDGET it settles (or, failing that, culls) the
+    // lowest pieces so there's always room for the next spawn().
     const halfWM = PLANK_SIZE.width / 2;
     const halfHM = PLANK_SIZE.height / 2;
     const { body, collider }: RapierPiece = this.rapierWorld.createDynamicBox(
@@ -135,8 +214,11 @@ export class PieceManager {
           ? { phase: 'falling', ageS: 0, joints: [], meltStepsDone: 0, rotationLocked: false, originXM: 0, originYM: 0, baseStrips: [] }
           : null,
       extraColliderHandles: [],
+      spawnedAtMs: performance.now(),
+      settled: false,
     };
     this.pieces.set(collider.handle, piece);
+    this.piecesById.set(id, piece);
     return piece;
   }
 
@@ -159,12 +241,17 @@ export class PieceManager {
       const p1 = this.pieces.get(event.handle1);
       const p2 = this.pieces.get(event.handle2);
       const approachSpeed = Math.max(this.preStepSpeed.get(event.handle1) ?? 0, this.preStepSpeed.get(event.handle2) ?? 0);
-      if (p1) {
+      // Settled (fixed-body) pieces don't need contact-force tracking, fx or
+      // load-checking any more — they're permanent scenery now (see
+      // maintainPieceBudget/settlePiece). A fixed body can still generate a
+      // contact-force event against the dynamic piece resting on it, so this
+      // guard matters, not just an optimization.
+      if (p1 && !p1.settled) {
         this.frameForce.set(event.handle1, Math.max(this.frameForce.get(event.handle1) ?? 0, event.totalForceMagnitude));
         if (p1.freeze?.phase === 'falling') freezingNow.add(p1);
         this.handleImpact(p1, p2 ? p2.material : null, event.totalForceMagnitude, approachSpeed);
       }
-      if (p2) {
+      if (p2 && !p2.settled) {
         this.frameForce.set(event.handle2, Math.max(this.frameForce.get(event.handle2) ?? 0, event.totalForceMagnitude));
         if (p2.freeze?.phase === 'falling') freezingNow.add(p2);
         this.handleImpact(p2, p1 ? p1.material : null, event.totalForceMagnitude, approachSpeed);
@@ -185,6 +272,7 @@ export class PieceManager {
     for (const piece of this.pieces.values()) {
       if (seenIds.has(piece.id)) continue;
       seenIds.add(piece.id);
+      if (piece.settled) continue; // fixed body: can't crack/shatter/wobble/fall any more
       if (piece.material === 'glass' && piece.glassState) {
         const force = this.frameForce.get(piece.collider.handle) ?? 0;
         const wasCracked = piece.glassState.state === 'cracked';
@@ -206,11 +294,13 @@ export class PieceManager {
       if (t.y > failY) fallen.push(piece);
     }
 
-    for (const piece of shattered) this.destroy(piece, true);
+    for (const piece of shattered) this.destroy(piece, 'shatter');
     for (const piece of fallen) {
-      this.destroy(piece, false);
+      this.destroy(piece, 'fell');
       this.onFellOff(piece);
     }
+
+    this.maintainPieceBudget();
   }
 
   private handleImpact(piece: PieceRuntime, otherMaterial: MaterialId | null, force: number, approachSpeed: number): void {
@@ -233,7 +323,11 @@ export class PieceManager {
   }
 
   syncRender(): void {
+    const seenIds = new Set<number>();
     for (const piece of this.pieces.values()) {
+      if (seenIds.has(piece.id)) continue;
+      seenIds.add(piece.id);
+      if (piece.settled) continue; // fixed body never moves again — position/rotation already correct
       const t = piece.body.translation();
       piece.container.x = t.x * PX_PER_M;
       piece.container.y = t.y * PX_PER_M;
@@ -241,35 +335,133 @@ export class PieceManager {
     }
   }
 
-  /** True once every current piece's body has gone to sleep (test hook — perf/jelly-spam checks). */
+  /** True once every current (non-settled) piece's body has gone to sleep (test hook — perf/jelly-spam checks). A settled/fixed body counts as sleeping — it's permanently at rest. */
   allSleeping(): boolean {
     if (this.pieces.size === 0) return true;
     for (const piece of this.pieces.values()) {
-      if (!piece.body.isSleeping()) return false;
+      if (!piece.settled && !piece.body.isSleeping()) return false;
     }
     return true;
+  }
+
+  /**
+   * Meters (world y, y-down) of this piece's top surface if it currently
+   * counts as "resting" (settled/fixed, a just-frozen ice body, asleep, or
+   * moving slower than SLOW_VELOCITY_THRESHOLD) — null otherwise. Shared by
+   * tallestRestingTopM (HUD height) and maintainPieceBudget (settle
+   * candidates).
+   */
+  private restingTopM(piece: PieceRuntime): number | null {
+    if (piece.settled) return piece.body.translation().y - piece.topOffsetM;
+    // A just-frozen ice body is already placed exactly where it's staying
+    // (its shape was built to sit flush the instant it landed) — it always
+    // counts toward height even though the pop-in settle spike from its
+    // brand-new flush colliders (see GLUE_GRACE_PERIOD_S in
+    // FreezeController) can leave it and its neighbours with a residual
+    // velocity above SLOW_VELOCITY_THRESHOLD for a few frames. Without
+    // this, the height HUD would drop to 0 right after every freeze.
+    const isSettledIce = piece.freeze?.phase === 'frozen';
+    const vel = piece.body.linvel();
+    const speed = Math.hypot(vel.x, vel.y);
+    if (isSettledIce || piece.body.isSleeping() || speed < SLOW_VELOCITY_THRESHOLD) {
+      return piece.body.translation().y - piece.topOffsetM;
+    }
+    return null;
   }
 
   /** Meters (world y, y-down) of the top surface of the highest settled piece, or null if none. */
   tallestRestingTopM(): number | null {
     let minTopM = Infinity;
     for (const piece of this.pieces.values()) {
-      // A just-frozen ice body is already placed exactly where it's staying
-      // (its shape was built to sit flush the instant it landed) — it always
-      // counts toward height even though the pop-in settle spike from its
-      // brand-new flush colliders (see GLUE_GRACE_PERIOD_S in
-      // FreezeController) can leave it and its neighbours with a residual
-      // velocity above SLOW_VELOCITY_THRESHOLD for a few frames. Without
-      // this, the height HUD would drop to 0 right after every freeze.
-      const isSettledIce = piece.freeze?.phase === 'frozen';
-      const vel = piece.body.linvel();
-      const speed = Math.hypot(vel.x, vel.y);
-      if (isSettledIce || piece.body.isSleeping() || speed < SLOW_VELOCITY_THRESHOLD) {
-        const topM = piece.body.translation().y - piece.topOffsetM;
-        if (topM < minTopM) minTopM = topM;
-      }
+      const topM = this.restingTopM(piece);
+      if (topM !== null && topM < minTopM) minTopM = topM;
     }
     return minTopM === Infinity ? null : minTopM;
+  }
+
+  /** Number of pieces whose Rapier body is still dynamic (counts toward DYNAMIC_PIECE_BUDGET). Test hook. */
+  dynamicPieceCount(): number {
+    let n = 0;
+    for (const piece of this.piecesById.values()) {
+      if (!piece.settled) n++;
+    }
+    return n;
+  }
+
+  /** Number of pieces whose Rapier body has been converted to fixed by the settle policy. Test hook. */
+  settledPieceCount(): number {
+    let n = 0;
+    for (const piece of this.piecesById.values()) {
+      if (piece.settled) n++;
+    }
+    return n;
+  }
+
+  /**
+   * Piece-budget policy: once the dynamic (non-settled) body count exceeds
+   * DYNAMIC_PIECE_BUDGET, converts the lowest resting pieces at least
+   * SETTLE_DEPTH_M below the current tower top into fixed bodies (see
+   * settlePiece). If that alone isn't enough — nothing down there is resting,
+   * e.g. mid-collapse chaos — forcibly removes the lowest remaining dynamic
+   * pieces (reason 'culled') so spawn() never has to refuse. Called once at
+   * the end of every step().
+   */
+  private maintainPieceBudget(): void {
+    let over = this.dynamicPieceCount() - DYNAMIC_PIECE_BUDGET;
+    if (over <= 0) return;
+
+    const towerTopM = this.tallestRestingTopM();
+    if (towerTopM !== null) {
+      const seenIds = new Set<number>();
+      const candidates: { piece: PieceRuntime; topM: number }[] = [];
+      for (const piece of this.pieces.values()) {
+        if (seenIds.has(piece.id)) continue;
+        seenIds.add(piece.id);
+        if (piece.settled) continue;
+        const topM = this.restingTopM(piece);
+        if (topM === null) continue;
+        if (topM - towerTopM < SETTLE_DEPTH_M) continue; // too close to the visible top — keep dynamic
+        candidates.push({ piece, topM });
+      }
+      candidates.sort((a, b) => b.topM - a.topM); // deepest (largest y) first
+      for (const { piece } of candidates) {
+        if (over <= 0) break;
+        this.settlePiece(piece);
+        over--;
+      }
+    }
+
+    if (over > 0) this.cullLowestDynamic(over);
+  }
+
+  /** Converts a resting piece's body to fixed in place — see maintainPieceBudget. */
+  private settlePiece(piece: PieceRuntime): void {
+    // Same joint-cleanup calls destroy() makes: any OTHER ice piece glued to
+    // this one must drop that reference (id-based — see FreezeGlueJoint's
+    // doc), and if this piece is itself frozen ice, its own outgoing joints
+    // and melt tracking must stop (a fixed body should never keep melting or
+    // pulling on a glue joint).
+    this.freezeController.purgeJointsTo(piece);
+    if (piece.freeze) this.freezeController.releaseJoints(piece);
+    this.rapierWorld.setBodyFixed(piece.body);
+    piece.settled = true;
+    piece.container.setAlpha(SETTLED_ALPHA);
+  }
+
+  /** Forcibly removes the lowest `count` still-dynamic pieces (reason 'culled') — fallback when settling alone can't bring the dynamic count back under budget. */
+  private cullLowestDynamic(count: number): void {
+    const seenIds = new Set<number>();
+    const candidates: PieceRuntime[] = [];
+    for (const piece of this.pieces.values()) {
+      if (seenIds.has(piece.id)) continue;
+      seenIds.add(piece.id);
+      if (piece.settled) continue;
+      candidates.push(piece);
+    }
+    candidates.sort((a, b) => b.body.translation().y - a.body.translation().y); // deepest (largest y) first
+    for (let i = 0; i < count && i < candidates.length; i++) {
+      this.destroy(candidates[i], 'culled');
+    }
   }
 
   countByMaterial(id: MaterialId): number {
@@ -283,12 +475,12 @@ export class PieceManager {
     return n;
   }
 
-  /** Removes a piece from the world without fx (used by FreezeController when ice fully melts). */
-  removePiece(piece: PieceRuntime): void {
-    this.destroy(piece, false);
+  /** Removes a piece from the world without fx (used by FreezeController when ice fully melts, or after a falling freeze piece converts into its compound ice body). */
+  removePiece(piece: PieceRuntime, reason: RemovalReason = 'melt'): void {
+    this.destroy(piece, reason);
   }
 
-  private destroy(piece: PieceRuntime, shatterFx: boolean): void {
+  private destroy(piece: PieceRuntime, reason: RemovalReason): void {
     const x = piece.container.x;
     const y = piece.container.y;
     // Must run before removeBody, and for every piece (not just frozen
@@ -300,19 +492,42 @@ export class PieceManager {
     this.rapierWorld.removeBody(piece.body);
     this.pieces.delete(piece.collider.handle);
     for (const handle of piece.extraColliderHandles) this.pieces.delete(handle);
+    this.piecesById.delete(piece.id);
     piece.container.destroy();
-    if (shatterFx) fxGlassShatter(x, y, this.materials[piece.material].colors.stroke);
+    this.logRemoval(piece, reason);
+    if (reason === 'shatter') fxGlassShatter(x, y, this.materials[piece.material].colors.stroke);
   }
 
-  clear(): void {
+  /** Records a removal for window.__materia.removals()/the "did my new piece survive" fuzz check, and warns on anything that looks like the "dropped piece vanishes" bug (see YOUNG_REMOVAL_WARN_MS). Public: FreezeController calls this directly for the one removal it does outside PieceManager.destroy() (a falling freeze piece converting into its ice body — see freezePiece()). */
+  logRemoval(piece: PieceRuntime, reason: RemovalReason): void {
+    const now = performance.now();
+    const ageMs = now - piece.spawnedAtMs;
+    this.removalLog.push({ id: piece.id, material: piece.material, reason, ageMs, at: now });
+    if (this.removalLog.length > MAX_REMOVAL_LOG) this.removalLog.shift();
+    if (reason !== 'reset' && reason !== 'froze' && reason !== 'culled' && ageMs < YOUNG_REMOVAL_WARN_MS) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[materia] piece #${piece.id} (${piece.material}) removed ${ageMs.toFixed(0)}ms after spawn, reason=${reason}`,
+      );
+    }
+  }
+
+  /** Last MAX_REMOVAL_LOG removals, oldest first (test hook / debug). */
+  removals(): RemovalRecord[] {
+    return this.removalLog.slice();
+  }
+
+  clear(reason: RemovalReason = 'reset'): void {
     const seenIds = new Set<number>();
     for (const piece of Array.from(this.pieces.values())) {
       if (seenIds.has(piece.id)) continue;
       seenIds.add(piece.id);
       this.rapierWorld.removeBody(piece.body);
       piece.container.destroy();
+      this.logRemoval(piece, reason);
     }
     this.pieces.clear();
+    this.piecesById.clear();
     this.freezeController.reset();
   }
 }

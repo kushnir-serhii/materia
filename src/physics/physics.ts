@@ -148,6 +148,17 @@ export class PhysicsWorld {
   }
 
   /**
+   * Converts a resting dynamic body into a fixed (static) one in place —
+   * used by PieceManager's piece-budget "settle" policy to retire pieces
+   * buried deep under a tall tower into permanent scenery without ever
+   * destroying them (keeps their visuals). A fixed body no longer counts
+   * against the dynamic-body budget and never needs simulating again.
+   */
+  setBodyFixed(body: RAPIER.RigidBody): void {
+    body.setBodyType(RAPIER.RigidBodyType.Fixed, true);
+  }
+
+  /**
    * A bare dynamic body with no collider yet — used to build the freeze
    * block's compound ice body (see game/freeze.ts + FreezeController), one
    * cuboid collider per fill strip added via addBoxCollider.

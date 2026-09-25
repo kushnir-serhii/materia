@@ -28,7 +28,7 @@ import {
   resetImpactFxCount,
 } from '../fx';
 import { Effects } from '../fx/effects';
-import { PieceManager } from './PieceManager';
+import { PieceManager, type RemovalRecord } from './PieceManager';
 
 function isDebugBuild(): boolean {
   try {
@@ -110,6 +110,16 @@ declare global {
       hudWrenchCenter: () => { x: number; y: number };
       /** Whether the dev material-picker panel is currently open. */
       hudDevPanelOpen: () => boolean;
+      /** Last MAX_REMOVAL_LOG piece removals (id/material/reason/ageMs/at), oldest first — see PieceManager.removals(). */
+      removals: () => RemovalRecord[];
+      /** id of the most recently successfully dropped piece, or null if none yet — pair with pieceExists()/removals() to check a drop actually survives. */
+      lastDroppedPieceId: () => number | null;
+      /** True if a piece with this id is currently alive (in PieceManager.piecesById). */
+      pieceExists: (id: number) => boolean;
+      /** Number of pieces whose Rapier body is still dynamic (i.e. counts toward the piece-budget settle policy's DYNAMIC_PIECE_BUDGET). */
+      dynamicPieceCount: () => number;
+      /** Number of pieces the piece-budget settle policy has converted to fixed bodies (kept for visuals, no longer simulated). */
+      settledPieceCount: () => number;
     };
   }
 }
@@ -134,6 +144,8 @@ export class GameScene extends Phaser.Scene {
   private pendingOverride: MaterialId | null = null;
 
   private cooldownRemaining = 0;
+  /** id of the most recently successfully dropped piece — test hook only (fuzz's "did my drop survive" check). */
+  private lastDroppedId: number | null = null;
   private hearts = HEARTS_MAX;
   private gameOver = false;
   private currentHeightM = 0;
@@ -310,6 +322,11 @@ export class GameScene extends Phaser.Scene {
       allSleeping: () => this.pieceManager.allSleeping(),
       hudWrenchCenter: () => this.hud.wrenchCenter(),
       hudDevPanelOpen: () => this.hud.isDevPanelOpen(),
+      removals: () => this.pieceManager.removals(),
+      lastDroppedPieceId: () => this.lastDroppedId,
+      pieceExists: (id) => this.pieceManager.piecesById.has(id),
+      dynamicPieceCount: () => this.pieceManager.dynamicPieceCount(),
+      settledPieceCount: () => this.pieceManager.settledPieceCount(),
     };
   }
 
@@ -341,7 +358,7 @@ export class GameScene extends Phaser.Scene {
     // eslint-disable-next-line no-console
     console.error('[materia] recovered from an error in the game loop:', err instanceof Error ? (err.stack ?? err.message) : err);
     try {
-      this.doReset();
+      this.doReset('error');
     } catch (resetErr) {
       // eslint-disable-next-line no-console
       console.error('[materia] recovery reset itself failed:', resetErr);
@@ -511,7 +528,15 @@ export class GameScene extends Phaser.Scene {
   drop(): boolean {
     if (this.gameOver || this.cooldownRemaining > 0) return false;
     const yM = (this.camScrollY + HOOK_SCREEN_Y_PX) / PX_PER_M;
-    this.pieceManager.spawn(this.hookMaterial, this.hookX, yM);
+    // spawn() always succeeds now (piece-budget policy settles/culls old
+    // pieces instead of ever refusing a new one — see PieceManager's
+    // maintainPieceBudget), but this null-check/early-return is kept as a
+    // defensive guard: if spawn() ever legitimately returns null again in
+    // the future, a tap must never silently start a cooldown for a piece
+    // that doesn't exist.
+    const piece = this.pieceManager.spawn(this.hookMaterial, this.hookX, yM);
+    if (!piece) return false;
+    this.lastDroppedId = piece.id;
     this.cooldownRemaining = DROP_COOLDOWN_S;
     return true;
   }
@@ -524,8 +549,8 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  private doReset(): void {
-    this.pieceManager.clear();
+  private doReset(reason: 'reset' | 'error' = 'reset'): void {
+    this.pieceManager.clear(reason);
     this.hearts = HEARTS_MAX;
     this.gameOver = false;
     this.hud.setGameOver(false);
@@ -537,6 +562,7 @@ export class GameScene extends Phaser.Scene {
     this.hadTower = false;
     this.currentHeightM = 0;
     this.pendingOverride = null;
+    this.lastDroppedId = null;
     this.nextMaterial = randomMaterial();
     this.spawnHookPreview();
   }
