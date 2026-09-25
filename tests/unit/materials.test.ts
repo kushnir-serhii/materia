@@ -68,8 +68,10 @@ describe('materials', () => {
     expect(m.physics.restitution).toBe(0);
     expect(m.feel.vibrate).toEqual([20, 40, 20]);
     expect(m.freeze.volume).toBeGreaterThan(0);
-    expect(m.freeze.meltStartS).toBeCloseTo(20);
-    expect(m.freeze.meltDurationS).toBeCloseTo(10);
+    // Whole block melts within 1 minute: 30s to start weakening + 30s to fully melt.
+    expect(m.freeze.meltStartS).toBeCloseTo(30);
+    expect(m.freeze.meltDurationS).toBeCloseTo(30);
+    expect(m.freeze.meltStartS + m.freeze.meltDurationS).toBeLessThanOrEqual(60);
     expect(m.freeze.shrinkFraction).toBeCloseTo(0.3);
     expect(m.freeze.glueBreakForce).toBeGreaterThan(0);
     expect(Number.isInteger(m.freeze.iceColors.fill)).toBe(true);

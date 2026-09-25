@@ -123,8 +123,10 @@ const GLASS_PARAMS: GlassParams = {
  */
 const FREEZE_PARAMS: FreezeParams = {
   volume: 1.2, // ~= PLANK_SIZE.width * PLANK_SIZE.height
-  meltStartS: 20,
-  meltDurationS: 10,
+  // Whole block melts within 1 minute (GDD §2.1): glue starts weakening at
+  // 30s, fully gone/unglued by 30+30 = 60s.
+  meltStartS: 30,
+  meltDurationS: 30,
   shrinkFraction: 0.3,
   glueBreakForce: 1700,
   iceColors: {
@@ -182,8 +184,17 @@ export const MATERIALS: Record<MaterialId, Material> = {
       density: 0.9,
       friction: 0.9,
       restitution: 0.55,
-      linearDamping: 0.02,
-      angularDamping: 0.02,
+      // Much higher than the other materials (0.02): a high-restitution body
+      // left undamped keeps re-energizing itself on every tiny resting
+      // micro-bounce against a neighbour (worst with several jellies stacked
+      // together) and never reaches Rapier's sleep threshold. This damping
+      // only bleeds velocity *between* bounces — the squash/wobble visual
+      // and the sound/haptic on a real impact are untouched — but lets a
+      // jelly pile actually settle and sleep within a few seconds instead of
+      // jittering (and re-triggering fx) indefinitely. See PieceManager's
+      // IMPACT_MIN_SPEED_MPS for the other half of that fix.
+      linearDamping: 0.4,
+      angularDamping: 0.4,
     },
     colors: {
       fill: 0xff6fb1,

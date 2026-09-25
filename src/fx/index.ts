@@ -31,6 +31,38 @@ export function bindEffects(e: Effects): void {
   effects = e;
 }
 
+/**
+ * Global safety net on top of PieceManager's per-piece impact gating
+ * (velocity threshold + 250ms cooldown, see PieceManager.ts): even with
+ * that, several *different* pieces landing/wobbling in the same window
+ * (e.g. a handful of jellies settling together) could each fire fx() within
+ * the same second. Caps actual impact fx (sound/haptic/effects) at
+ * MAX_IMPACT_FX_PER_SEC — extra impacts in the same rolling second are
+ * silently dropped rather than queued.
+ */
+const MAX_IMPACT_FX_PER_SEC = 6;
+const impactFxTimestamps: number[] = [];
+let impactFxCount = 0; // cumulative, for the fxImpactCount() test hook
+
+function impactFxBudgetAvailable(): boolean {
+  const now = performance.now();
+  while (impactFxTimestamps.length > 0 && now - impactFxTimestamps[0] >= 1000) impactFxTimestamps.shift();
+  if (impactFxTimestamps.length >= MAX_IMPACT_FX_PER_SEC) return false;
+  impactFxTimestamps.push(now);
+  return true;
+}
+
+/** Cumulative count of impact fx actually fired since load/reset (test hook). */
+export function getImpactFxCount(): number {
+  return impactFxCount;
+}
+
+/** Resets the fxImpactCount() counter (test hook, for measuring a fresh window). */
+export function resetImpactFxCount(): void {
+  impactFxCount = 0;
+  impactFxTimestamps.length = 0;
+}
+
 /** Call from inside a user-gesture handler (pointerdown/keydown) so WebAudio can start. */
 export function initFxGesture(): void {
   ensureAudioContext();
@@ -62,6 +94,8 @@ export function fx(
   xPx: number,
   yPx: number,
 ): void {
+  if (!impactFxBudgetAvailable()) return;
+  impactFxCount++;
   playImpactSound(pieceMaterial, force);
 
   const material = MATERIALS[pieceMaterial];

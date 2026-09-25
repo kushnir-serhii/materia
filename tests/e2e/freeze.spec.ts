@@ -14,6 +14,13 @@ declare global {
       spawn: (material: MaterialId, xMeters: number, yMeters: number) => void;
       jointCount: () => number;
       freezeTopFlatness: () => number;
+      freezeAngleDeg: () => number;
+      clearPieces: () => void;
+      platformScreenY: () => number;
+      towerTopScreenY: () => number | null;
+      fxImpactCount: () => number;
+      resetFxImpactCount: () => void;
+      allSleeping: () => boolean;
     };
   }
 }
@@ -51,6 +58,53 @@ test('freeze fills an uneven tower flat and glues to it, no page errors', async 
   expect(pageErrors).toEqual([]);
 });
 
+test('height HUD counts a frozen block toward tower height right after it freezes', async ({ page }) => {
+  const pageErrors: Error[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error));
+
+  await page.goto('/');
+  await page.waitForFunction(() => !!window.__materia, undefined, { timeout: 5000 });
+
+  await page.evaluate(() => {
+    window.__materia!.spawn('wood', 4.4, 14.2);
+    window.__materia!.stepFast(1.5);
+    window.__materia!.spawn('freeze', 5.4, 12);
+  });
+
+  // Step in small increments and check height the instant it freezes (the
+  // very frame jointCount first becomes > 0) — this used to read 0.0 m
+  // because of the freeze pop-in settle spike (see GLUE_GRACE_PERIOD_S).
+  const heightAtFreeze = await page.evaluate(() => {
+    for (let i = 0; i < 60; i++) {
+      window.__materia!.stepFast(0.05);
+      if (window.__materia!.jointCount() > 0) return window.__materia!.height();
+    }
+    return -1;
+  });
+
+  expect(heightAtFreeze).toBeGreaterThan(0.3);
+  expect(pageErrors).toEqual([]);
+});
+
+test('a frozen block on an uneven tower settles level', async ({ page }) => {
+  const pageErrors: Error[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error));
+
+  await page.goto('/');
+  await page.waitForFunction(() => !!window.__materia, undefined, { timeout: 5000 });
+
+  await page.evaluate(() => {
+    window.__materia!.spawn('wood', 4.4, 14.2);
+    window.__materia!.stepFast(1.5);
+    window.__materia!.spawn('freeze', 5.4, 12);
+    window.__materia!.stepFast(3); // well past ROTATION_LOCK_S so it's had time to settle unlocked
+  });
+
+  const angleDeg = await page.evaluate(() => window.__materia!.freezeAngleDeg());
+  expect(angleDeg).toBeLessThan(2);
+  expect(pageErrors).toEqual([]);
+});
+
 test('a glue joint breaks under a heavy impact', async ({ page }) => {
   const pageErrors: Error[] = [];
   page.on('pageerror', (error) => pageErrors.push(error));
@@ -77,5 +131,35 @@ test('a glue joint breaks under a heavy impact', async ({ page }) => {
 
   const jointsAfter = await page.evaluate(() => window.__materia!.jointCount());
   expect(jointsAfter).toBeLessThan(jointsBefore);
+  expect(pageErrors).toEqual([]);
+});
+
+test('an undisturbed ice block fully unglues within 1 minute (meltStart 30s + meltDuration 30s)', async ({ page }) => {
+  const pageErrors: Error[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error));
+
+  await page.goto('/');
+  await page.waitForFunction(() => !!window.__materia, undefined, { timeout: 5000 });
+
+  await page.evaluate(() => {
+    window.__materia!.spawn('wood', 4.4, 14.2);
+    window.__materia!.stepFast(1.5);
+    window.__materia!.spawn('freeze', 5.4, 12);
+    window.__materia!.stepFast(2); // let it land and freeze solid
+  });
+
+  const jointsRightAfterFreeze = await page.evaluate(() => window.__materia!.jointCount());
+  expect(jointsRightAfterFreeze).toBeGreaterThan(0);
+
+  // Just before meltStartS (30s) the glue must still be fully intact.
+  await page.evaluate(() => window.__materia!.stepFast(27));
+  const jointsBeforeMeltStart = await page.evaluate(() => window.__materia!.jointCount());
+  expect(jointsBeforeMeltStart).toBe(jointsRightAfterFreeze);
+
+  // Well past meltStartS + meltDurationS (30s + 30s = 60s total) every glue
+  // joint must be gone.
+  await page.evaluate(() => window.__materia!.stepFast(36));
+  const jointsAfterAMinute = await page.evaluate(() => window.__materia!.jointCount());
+  expect(jointsAfterAMinute).toBe(0);
   expect(pageErrors).toEqual([]);
 });

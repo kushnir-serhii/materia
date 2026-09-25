@@ -23,6 +23,8 @@ import {
   isMuted,
   setVibrationEnabled,
   isVibrationEnabled,
+  getImpactFxCount,
+  resetImpactFxCount,
 } from '../fx';
 import { Effects } from '../fx/effects';
 import { PieceManager } from './PieceManager';
@@ -60,6 +62,14 @@ const HOOK_SPEED_MAX = 2.5;
 const DROP_COOLDOWN_S = 0.6;
 const HEARTS_MAX = 3;
 const CAMERA_LERP = 0.08;
+/** Slower lerp when the camera is coming back down (tower got shorter), so a
+ *  collapse settles smoothly instead of snapping/bouncing the view. */
+const CAMERA_LERP_DOWN = 0.04;
+/** The tower must have been shorter than the camera's current target for
+ *  this long before the camera actually starts following it back down —
+ *  otherwise a mid-collapse wobble (a piece bouncing before it resettles)
+ *  would bounce the camera too. */
+const CAMERA_DOWN_DELAY_S = 0.5;
 const VIEW_TOP_FRACTION = 0.4;
 
 declare global {
@@ -75,6 +85,19 @@ declare global {
       spawn: (material: MaterialId, xMeters: number, yMeters: number) => void;
       jointCount: () => number;
       freezeTopFlatness: () => number;
+      freezeAngleDeg: () => number;
+      /** Removes every piece without touching hearts/game-over state — for camera-recovery tests. */
+      clearPieces: () => void;
+      /** The platform top's current screen-space y in px (0 = top of screen, 960 = bottom). */
+      platformScreenY: () => number;
+      /** The current tower top's screen-space y in px, or null if nothing is resting. */
+      towerTopScreenY: () => number | null;
+      /** Cumulative count of impact fx (sound/haptic/effects) actually fired since load/last reset. */
+      fxImpactCount: () => number;
+      /** Zeroes fxImpactCount()'s counter, for measuring a fresh time window. */
+      resetFxImpactCount: () => void;
+      /** True once every current piece has gone to sleep. */
+      allSleeping: () => boolean;
     };
   }
 }
@@ -107,6 +130,18 @@ export class GameScene extends Phaser.Scene {
   private initialScrollY = 0;
   private camScrollY = 0;
   private camTargetY = 0;
+  /** how long the tower has continuously been shorter than the camera's
+   *  current target, for the CAMERA_DOWN_DELAY_S debounce (see updateCamera). */
+  private towerLowerSinceS = 0;
+  /** true once at least one piece has rested on the board — distinguishes a
+   *  genuine "tower got shorter" (collapse) from the one-off reveal when the
+   *  very first piece lands (see updateCamera). */
+  private hadTower = false;
+  /** true while the camera should use the slower "coming back down" lerp;
+   *  set explicitly by updateCamera rather than inferred from comparing
+   *  camScrollY/camTargetY, which would also (wrongly) catch the very first
+   *  reveal — see hadTower. */
+  private cameraGoingDown = false;
 
   constructor() {
     super('GameScene');
@@ -238,6 +273,16 @@ export class GameScene extends Phaser.Scene {
       },
       jointCount: () => this.pieceManager.freezeController.jointCount(),
       freezeTopFlatness: () => this.pieceManager.freezeController.topFlatness(),
+      freezeAngleDeg: () => this.pieceManager.freezeController.freezeAngleDeg(),
+      clearPieces: () => this.pieceManager.clear(),
+      platformScreenY: () => this.platformTopY * PX_PER_M - this.camScrollY,
+      towerTopScreenY: () => {
+        const topM = this.pieceManager.tallestRestingTopM();
+        return topM === null ? null : topM * PX_PER_M - this.camScrollY;
+      },
+      fxImpactCount: () => getImpactFxCount(),
+      resetFxImpactCount: () => resetImpactFxCount(),
+      allSleeping: () => this.pieceManager.allSleeping(),
     };
   }
 
@@ -259,7 +304,7 @@ export class GameScene extends Phaser.Scene {
     const physicsDt = consumeHitStopDt(dt);
     this.pieceManager.step(physicsDt, this.platformTopY + FAIL_MARGIN_M);
     updateEffects(dt);
-    this.updateCamera();
+    this.updateCamera(dt);
     this.pieceManager.syncRender();
     this.syncHook();
 
@@ -273,17 +318,78 @@ export class GameScene extends Phaser.Scene {
     fx(pieceMaterial, otherMaterial, force, x, y);
   }
 
-  private updateCamera(): void {
+  /**
+   * Follows the current tower top in both directions: up as it grows, and
+   * back down once it collapses/shrinks, so the platform never gets stranded
+   * off-screen above the camera (the original bug — the target only ever
+   * moved up). tallestRestingTopM already ignores falling/flying pieces, so
+   * a piece still tumbling mid-collapse can't drag the target around.
+   *
+   * The reference point is clamped to the platform's own top at most: a
+   * piece that has slid off the platform edge (resting, but below platform
+   * level, still short of the fail line/FAIL_MARGIN_M) must never read as
+   * "taller" than the platform itself, or it drags desiredScrollY past a
+   * safe bound and shoves the platform down behind the bottom button bar —
+   * this is the camera "overshooting downward". With this clamp,
+   * desiredScrollY's largest possible value keeps the platform's own top
+   * framed at VIEW_TOP_FRACTION (well clear of HUD_BUTTON_ZONE_TOP), same as
+   * an empty/just-started tower, so the tower top is always shown at about
+   * VIEW_TOP_FRACTION from the top and never lower on screen than that.
+   *
+   * Moving down is debounced (CAMERA_DOWN_DELAY_S) and lerped more slowly
+   * (CAMERA_LERP_DOWN) than moving up, so a momentary dip while a tower
+   * resettles doesn't bounce the view. Which lerp speed applies is decided
+   * explicitly (cameraGoingDown) rather than by comparing camTargetY to
+   * camScrollY: that raw comparison doesn't know a target value came from
+   * the differently-scaled "empty board" framing (initialScrollY) rather
+   * than an actual shrink, and would misclassify the very first piece
+   * landing as "the tower got shorter" — leaving the top framed well below
+   * VIEW_TOP_FRACTION for several seconds (see hadTower below).
+   */
+  private updateCamera(dt: number): void {
     const topM = this.pieceManager.tallestRestingTopM();
     if (topM !== null) {
-      const desiredScrollY = topM * PX_PER_M - VIEW_TOP_FRACTION * SCREEN_H;
-      this.camTargetY = Math.min(this.camTargetY, desiredScrollY);
+      const referenceTopM = Math.min(topM, this.platformTopY);
+      const desiredScrollY = referenceTopM * PX_PER_M - VIEW_TOP_FRACTION * SCREEN_H;
       this.currentHeightM = Math.max(0, this.platformTopY - topM);
+
+      if (!this.hadTower) {
+        // The board's very first resting piece(s): jump straight to framing
+        // them, not a "coming back down from a collapse" motion.
+        this.camTargetY = desiredScrollY;
+        this.towerLowerSinceS = 0;
+        this.cameraGoingDown = false;
+        this.hadTower = true;
+      } else if (desiredScrollY > this.camTargetY) {
+        // Tower is shorter than what the camera is currently framing.
+        this.towerLowerSinceS += dt;
+        if (this.towerLowerSinceS >= CAMERA_DOWN_DELAY_S) {
+          this.camTargetY = desiredScrollY;
+          this.cameraGoingDown = true;
+        }
+      } else {
+        this.towerLowerSinceS = 0;
+        this.camTargetY = desiredScrollY;
+        this.cameraGoingDown = false;
+      }
     } else {
+      // Nothing resting (empty board) — go straight back to the start view.
       this.currentHeightM = 0;
+      this.camTargetY = this.initialScrollY;
+      this.towerLowerSinceS = 0;
+      this.cameraGoingDown = false;
+      this.hadTower = false;
     }
 
-    this.camScrollY = Phaser.Math.Linear(this.camScrollY, this.camTargetY, CAMERA_LERP);
+    // Belt-and-suspenders on top of the referenceTopM clamp above: the
+    // target can never ask to frame the platform's own top any lower than
+    // VIEW_TOP_FRACTION, so it (and by extension the button row below it)
+    // can never overshoot down into HUD_BUTTON_ZONE_TOP.
+    const maxScrollY = this.platformTopY * PX_PER_M - VIEW_TOP_FRACTION * SCREEN_H;
+    this.camTargetY = Math.min(this.camTargetY, maxScrollY);
+
+    const lerp = this.cameraGoingDown ? CAMERA_LERP_DOWN : CAMERA_LERP;
+    this.camScrollY = Phaser.Math.Linear(this.camScrollY, this.camTargetY, lerp);
     this.cameras.main.scrollY = this.camScrollY;
 
     if (this.currentHeightM > this.bestHeightM) {
@@ -353,6 +459,9 @@ export class GameScene extends Phaser.Scene {
     this.cooldownRemaining = 0;
     this.camScrollY = this.initialScrollY;
     this.camTargetY = this.initialScrollY;
+    this.towerLowerSinceS = 0;
+    this.cameraGoingDown = false;
+    this.hadTower = false;
     this.currentHeightM = 0;
     this.pendingOverride = null;
     this.nextMaterial = randomMaterial();

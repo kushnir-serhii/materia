@@ -4,7 +4,7 @@
 // scrollFactor(0) so it never moves with the camera.
 
 import Phaser from 'phaser';
-import { MATERIALS, MATERIAL_IDS, ALL_MATERIAL_IDS, type MaterialId } from '../game/materials';
+import { MATERIALS, ALL_MATERIAL_IDS, type MaterialId } from '../game/materials';
 
 const SCREEN_W = 540;
 const SCREEN_H = 960;
@@ -78,9 +78,12 @@ export class Hud {
       .setInteractive({ useHandCursor: true });
     this.vibrateButton.on('pointerdown', onToggleVibration);
 
+    // 5 equal-width buttons (Wood, Stone, Jelly, Glass, Freeze), keys 1-5 —
+    // freeze gets no special treatment here even though GDD §2.1 keeps it out
+    // of the *random* rotation; as a manual pick it's just a 5th material.
     const buttonY = SCREEN_H - 40;
-    const buttonW = SCREEN_W / MATERIAL_IDS.length;
-    MATERIAL_IDS.forEach((id, i) => {
+    const buttonW = SCREEN_W / ALL_MATERIAL_IDS.length;
+    ALL_MATERIAL_IDS.forEach((id, i) => {
       const cx = buttonW * i + buttonW / 2;
       const material = MATERIALS[id];
       const bg = scene.add
@@ -103,27 +106,6 @@ export class Hud {
         .setScrollFactor(0)
         .setDepth(101);
     });
-
-    // 5th, small "Freeze" button (GDD §2.1: never a plain rotation slot, so
-    // it lives apart from the 4 evenly-split material buttons above).
-    const freezeMaterial = MATERIALS.freeze;
-    const freezeBtnW = 64;
-    const freezeBtnH = 28;
-    const freezeCx = SCREEN_W - freezeBtnW / 2 - 8;
-    const freezeCy = buttonY - 42;
-    const freezeBg = scene.add
-      .rectangle(freezeCx, freezeCy, freezeBtnW, freezeBtnH, freezeMaterial.colors.fill, 0.9)
-      .setStrokeStyle(2, freezeMaterial.colors.stroke)
-      .setScrollFactor(0)
-      .setDepth(100)
-      .setInteractive({ useHandCursor: true });
-    freezeBg.on('pointerdown', () => onPickMaterial('freeze'));
-    this.materialButtons.freeze = freezeBg;
-    scene.add
-      .text(freezeCx, freezeCy, `5 · ${MATERIAL_NAMES.freeze}`, { fontSize: '10px', color: '#0a2a3a', fontStyle: 'bold' })
-      .setOrigin(0.5)
-      .setScrollFactor(0)
-      .setDepth(101);
 
     this.overlay = scene.add.container(SCREEN_W / 2, SCREEN_H / 2).setScrollFactor(0).setDepth(200);
     const overlayBg = scene.add.rectangle(0, 0, SCREEN_W, SCREEN_H, 0x000000, 0.6);

@@ -14,6 +14,13 @@ declare global {
       spawn: (material: MaterialId, xMeters: number, yMeters: number) => void;
       jointCount: () => number;
       freezeTopFlatness: () => number;
+      freezeAngleDeg: () => number;
+      clearPieces: () => void;
+      platformScreenY: () => number;
+      towerTopScreenY: () => number | null;
+      fxImpactCount: () => number;
+      resetFxImpactCount: () => void;
+      allSleeping: () => boolean;
     };
   }
 }

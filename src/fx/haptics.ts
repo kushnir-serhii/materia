@@ -3,7 +3,11 @@
 // at M2 (2.2) this gets swapped for @capacitor/haptics behind the same
 // vibrate() signature.
 
-const MIN_GAP_MS = 60;
+/** ~1 buzz per 120ms max — merges/drops overlapping short vibrations from a
+ *  pile-up of impacts (see PieceManager's IMPACT_MIN_SPEED_MPS/IMPACT_DEBOUNCE_MS
+ *  and fx()'s own global rate limit for the sound/effects side of the same
+ *  jelly-pile-up fix). */
+const MIN_GAP_MS = 120;
 
 let enabled = true;
 let lastVibrateAt = 0;

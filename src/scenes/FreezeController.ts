@@ -30,6 +30,21 @@ const MELT_STEPS = 4;
  */
 const GLUE_GRACE_PERIOD_S = 0.3;
 
+/**
+ * A freshly built compound ice body is several independently-sized box
+ * colliders bolted together, possibly glued at only one or two points along
+ * an uneven tower — nowhere near enough contact points on its own to resist
+ * every torque, so simply relying on friction/contacts to keep it level
+ * lets it settle into a small permanent tilt. It stays rotation-locked for
+ * at least this long after freezing (covering the settle spike from
+ * GLUE_GRACE_PERIOD_S), and beyond that for as long as it's still glued to
+ * anything (see update()) — a solid block welded to its neighbours has no
+ * business rotating independently of them. Rotation is handed back once it
+ * has lost every glue joint (broken by an overload impact, or melted away),
+ * so it still reacts normally as free debris from then on.
+ */
+const ROTATION_LOCK_S = 0.5;
+
 export type FreezePhase = 'falling' | 'frozen' | 'melted';
 
 export interface FreezeGlueJoint {
@@ -44,6 +59,8 @@ export interface FreezeRuntimeState {
   ageS: number;
   joints: FreezeGlueJoint[];
   meltStepsDone: number;
+  /** true while rotation is locked right after freezing (see ROTATION_LOCK_S). */
+  rotationLocked: boolean;
   /** the compound body's origin in world meters, fixed for this piece's lifetime. */
   originXM: number;
   originYM: number;
@@ -71,6 +88,16 @@ export class FreezeController {
   /** max(top)-min(top) of the last freeze's strips; ~0 means a flat top line (test hook). */
   topFlatness(): number {
     return freezeTopFlatness(this.lastStrips);
+  }
+
+  /** Largest |rotation| in degrees across every currently frozen ice piece; 0 if none (test hook). */
+  freezeAngleDeg(): number {
+    let maxDeg = 0;
+    for (const piece of this.activeIcePieces) {
+      const deg = Math.abs((piece.body.rotation() * 180) / Math.PI);
+      if (deg > maxDeg) maxDeg = deg;
+    }
+    return maxDeg;
   }
 
   reset(): void {
@@ -125,6 +152,9 @@ export class FreezeController {
 
     const iceMaterial = this.materials.freeze;
     const body = this.pm.rapierWorld.createDynamicBody(originXM, originYM);
+    // Hold it level through the settle spike (see ROTATION_LOCK_S); update()
+    // unlocks it again once that's passed.
+    body.lockRotations(true, true);
     const colliders: RAPIER.Collider[] = [];
     for (const s of strips) {
       const localX = s.xCenter - originXM;
@@ -147,12 +177,16 @@ export class FreezeController {
       graphics,
       halfWM: (x1 - x0) / 2,
       halfHM: (maxBottom - topY) / 2,
+      // The compound body's origin (originYM) IS its flat top line, not its
+      // center (unlike a normal piece's symmetric collider) — see
+      // PieceRuntime.topOffsetM.
+      topOffsetM: 0,
       wPx,
       hPx,
       glassState: null,
       jellySpring: null,
       lastImpactAt: 0,
-      freeze: { phase: 'frozen', ageS: 0, joints: [], meltStepsDone: 0, originXM, originYM, baseStrips: strips },
+      freeze: { phase: 'frozen', ageS: 0, joints: [], meltStepsDone: 0, rotationLocked: true, originXM, originYM, baseStrips: strips },
       extraColliderHandles: colliders.slice(1).map((c) => c.handle),
     };
     for (const c of colliders) this.pm.pieces.set(c.handle, icePiece);
@@ -238,6 +272,12 @@ export class FreezeController {
             fxFreezeCrack(piece.container.x, piece.container.y);
           }
         }
+      }
+      // See ROTATION_LOCK_S: locked for at least that long, and for as long
+      // after that as it's still glued to something.
+      if (piece.freeze.rotationLocked && piece.freeze.ageS >= ROTATION_LOCK_S && piece.freeze.joints.length === 0) {
+        piece.body.lockRotations(false, true);
+        piece.freeze.rotationLocked = false;
       }
       this.updateMelt(piece);
     }
