@@ -1,7 +1,7 @@
 // Material definitions — the only place physics/feel/glass values are tuned.
 // See docs/GDD.md §2 for the design intent behind these numbers.
 
-export type MaterialId = 'wood' | 'stone' | 'jelly' | 'glass';
+export type MaterialId = 'wood' | 'stone' | 'jelly' | 'glass' | 'freeze';
 
 export interface MaterialPhysics {
   /** kg / m^2 (Rapier 2D uses area density) */
@@ -46,6 +46,26 @@ export interface GlassParams {
   loadTime: number;
 }
 
+/**
+ * Freeze-only tuning (GDD §2.1). Like `GlassParams`, present on every
+ * material entry (non-freeze materials just carry FREEZE_PARAMS unused) so
+ * code can read `MATERIALS[id].freeze` without a type guard.
+ */
+export interface FreezeParams {
+  /** target fill volume in m^2 (2D "area"), see GDD §2.1 (≈ plank area). */
+  volume: number;
+  /** seconds after freezing before glue joints start weakening. */
+  meltStartS: number;
+  /** seconds over which joints are removed and the ice shrinks. */
+  meltDurationS: number;
+  /** fraction (0..1) the ice's linear size shrinks by once fully melted. */
+  shrinkFraction: number;
+  /** impact force (N) on a glued piece that breaks its joint to the ice. */
+  glueBreakForce: number;
+  /** pale icy look once frozen (colors.fill/stroke are the pre-freeze water blob look). */
+  iceColors: MaterialColors;
+}
+
 export interface Material {
   id: MaterialId;
   physics: MaterialPhysics;
@@ -55,6 +75,8 @@ export interface Material {
    *  can read `MATERIALS[id].glass` without a type guard when it only cares
    *  about glass. Non-glass materials carry the same numbers unused. */
   glass: GlassParams;
+  /** only meaningful for id === 'freeze', see FreezeParams. */
+  freeze: FreezeParams;
 }
 
 /*
@@ -92,6 +114,25 @@ const GLASS_PARAMS: GlassParams = {
   loadTime: 0.5,
 };
 
+/*
+ * Freeze glue-break force: GDD §2.1 wants it "≈ stone 3 m drop" — measurement
+ * D in the glass comment above found a stone plank dropped from 3m hits with
+ * a ~1932 N peak, so glueBreakForce sits comfortably under that (a stone
+ * drop from height WILL pop the glue) but well above ordinary settling
+ * impacts (wood resting ~34N, 2-stone stack settle spike ~113N).
+ */
+const FREEZE_PARAMS: FreezeParams = {
+  volume: 1.2, // ~= PLANK_SIZE.width * PLANK_SIZE.height
+  meltStartS: 20,
+  meltDurationS: 10,
+  shrinkFraction: 0.3,
+  glueBreakForce: 1700,
+  iceColors: {
+    fill: 0xe8f7fb,
+    stroke: 0xa9d8e6,
+  },
+};
+
 export const MATERIALS: Record<MaterialId, Material> = {
   wood: {
     id: 'wood',
@@ -112,6 +153,7 @@ export const MATERIALS: Record<MaterialId, Material> = {
       shake: 0.15,
     },
     glass: GLASS_PARAMS,
+    freeze: FREEZE_PARAMS,
   },
   stone: {
     id: 'stone',
@@ -132,6 +174,7 @@ export const MATERIALS: Record<MaterialId, Material> = {
       shake: 0.6,
     },
     glass: GLASS_PARAMS,
+    freeze: FREEZE_PARAMS,
   },
   jelly: {
     id: 'jelly',
@@ -152,6 +195,7 @@ export const MATERIALS: Record<MaterialId, Material> = {
       shake: 0.1,
     },
     glass: GLASS_PARAMS,
+    freeze: FREEZE_PARAMS,
   },
   glass: {
     id: 'glass',
@@ -172,10 +216,40 @@ export const MATERIALS: Record<MaterialId, Material> = {
       shake: 0.25,
     },
     glass: GLASS_PARAMS,
+    freeze: FREEZE_PARAMS,
+  },
+  freeze: {
+    id: 'freeze',
+    physics: {
+      density: 0.9,
+      friction: 0.5,
+      restitution: 0,
+      linearDamping: 0.02,
+      angularDamping: 0.02,
+    },
+    // Water-blue translucent while falling/unfrozen; freeze.iceColors is the
+    // pale icy look used once it lands and freezes (see FreezeController).
+    colors: {
+      fill: 0x4fb0ff,
+      stroke: 0x2a7fc9,
+    },
+    feel: {
+      sound: 'freeze',
+      vibrate: [20, 40, 20],
+      shake: 0,
+    },
+    glass: GLASS_PARAMS,
+    freeze: FREEZE_PARAMS,
   },
 };
 
+/** Ids in the normal random hook rotation. `freeze` is deliberately excluded
+ *  here (GDD §2.1: spawned ~1 in 10 pieces, never as a plain rotation slot)
+ *  — see ALL_MATERIAL_IDS for the full set including it. */
 export const MATERIAL_IDS: MaterialId[] = ['wood', 'stone', 'jelly', 'glass'];
+
+/** Every material id, including the freeze special. */
+export const ALL_MATERIAL_IDS: MaterialId[] = [...MATERIAL_IDS, 'freeze'];
 
 /** Base plank shape, meters. */
 export const PLANK_SIZE = { width: 2.0, height: 0.6 };
@@ -188,7 +262,7 @@ export const PLANK_SIZE = { width: 2.0, height: 0.6 };
  */
 export function cloneMaterialsForRuntime(): Record<MaterialId, Material> {
   const clone = {} as Record<MaterialId, Material>;
-  for (const id of MATERIAL_IDS) {
+  for (const id of ALL_MATERIAL_IDS) {
     const m = MATERIALS[id];
     clone[id] = {
       id: m.id,
@@ -196,6 +270,7 @@ export function cloneMaterialsForRuntime(): Record<MaterialId, Material> {
       colors: { ...m.colors },
       feel: { ...m.feel, vibrate: [...m.feel.vibrate] },
       glass: { ...m.glass },
+      freeze: { ...m.freeze, iceColors: { ...m.freeze.iceColors } },
     };
   }
   return clone;

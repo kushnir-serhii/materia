@@ -90,6 +90,37 @@ export class Effects {
     }
   }
 
+  /** A quick full-screen flash at `alpha`, fading over `durationMs`. Used for glass shatter and freeze's frost flash. */
+  flashScreen(alpha: number, durationMs = 180): void {
+    this.flash.setAlpha(alpha);
+    this.scene.tweens.add({ targets: this.flash, alpha: 0, duration: durationMs, ease: 'Cubic.Out' });
+  }
+
+  /** A short burst of icy puffs, e.g. along the freeze piece's flat top line when it freezes solid. */
+  frost(xPx: number, yPx: number, spreadPx: number, color: number): void {
+    const count = 10 + Math.floor(Math.random() * 6);
+    for (let i = 0; i < count; i++) {
+      const slot = this.dustPool.find((d) => !d.busy);
+      if (!slot) break;
+      slot.busy = true;
+      const px = xPx + (Math.random() - 0.5) * spreadPx;
+      const py = yPx + (Math.random() - 0.5) * 10;
+      slot.obj.setPosition(px, py).setVisible(true).setAlpha(0.8).setScale(1).setFillStyle(color, 0.7);
+      this.scene.tweens.add({
+        targets: slot.obj,
+        y: py - 10 - Math.random() * 14,
+        alpha: 0,
+        scale: 1.6,
+        duration: 250 + Math.random() * 200,
+        ease: 'Cubic.Out',
+        onComplete: () => {
+          slot.busy = false;
+          slot.obj.setVisible(false);
+        },
+      });
+    }
+  }
+
   /** Camera shake scaled by material shakeStrength * force (caller pre-multiplies). */
   shake(strength: number): void {
     if (strength <= 0) return;

@@ -136,6 +136,79 @@ export class PhysicsWorld {
     this.world.removeRigidBody(body);
   }
 
+  /**
+   * A bare dynamic body with no collider yet — used to build the freeze
+   * block's compound ice body (see game/freeze.ts + FreezeController), one
+   * cuboid collider per fill strip added via addBoxCollider.
+   */
+  createDynamicBody(x: number, y: number): RAPIER.RigidBody {
+    const bodyDesc = RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y).setCanSleep(true);
+    return this.world.createRigidBody(bodyDesc);
+  }
+
+  /** Adds one cuboid collider to `body`, offset (localX, localY) from its origin. */
+  addBoxCollider(
+    body: RAPIER.RigidBody,
+    material: Material,
+    localX: number,
+    localY: number,
+    halfWidth: number,
+    halfHeight: number,
+  ): RAPIER.Collider {
+    const colliderDesc = RAPIER.ColliderDesc.cuboid(halfWidth, halfHeight)
+      .setTranslation(localX, localY)
+      .setDensity(material.physics.density)
+      .setFriction(material.physics.friction)
+      .setRestitution(material.physics.restitution)
+      .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+      .setContactForceEventThreshold(CONTACT_FORCE_EVENT_THRESHOLD);
+    return this.world.createCollider(colliderDesc, body);
+  }
+
+  removeCollider(collider: RAPIER.Collider): void {
+    this.world.removeCollider(collider, true);
+  }
+
+  /**
+   * Casts a ray straight down from (xM, fromYM); returns the world y of the
+   * first surface hit within maxToiM, or null if nothing was hit.
+   * `excludeBody` is typically the falling freeze piece itself.
+   */
+  castRayDown(xM: number, fromYM: number, maxToiM: number, excludeBody?: RAPIER.RigidBody): number | null {
+    const ray = new RAPIER.Ray({ x: xM, y: fromYM }, { x: 0, y: 1 });
+    const hit = this.world.castRay(ray, maxToiM, true, undefined, undefined, undefined, excludeBody);
+    if (!hit) return null;
+    return fromYM + hit.timeOfImpact;
+  }
+
+  /** Collider handles whose AABB intersects the given box, expanded by `marginM` on every side. */
+  collidersOverlappingBox(
+    centerX: number,
+    centerY: number,
+    halfWidth: number,
+    halfHeight: number,
+    marginM: number,
+  ): RAPIER.Collider[] {
+    const found: RAPIER.Collider[] = [];
+    this.world.collidersWithAabbIntersectingAabb(
+      { x: centerX, y: centerY },
+      { x: halfWidth + marginM, y: halfHeight + marginM },
+      (collider) => {
+        found.push(collider);
+        return true;
+      },
+    );
+    return found;
+  }
+
+  createImpulseJoint(desc: RAPIER.JointData, body1: RAPIER.RigidBody, body2: RAPIER.RigidBody): RAPIER.ImpulseJoint {
+    return this.world.createImpulseJoint(desc, body1, body2, true);
+  }
+
+  removeImpulseJoint(joint: RAPIER.ImpulseJoint): void {
+    this.world.removeImpulseJoint(joint, true);
+  }
+
   free(): void {
     this.eventQueue.free();
   }

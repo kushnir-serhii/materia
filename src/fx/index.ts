@@ -9,6 +9,9 @@ import {
   playImpactSound,
   playGlassCrackSound,
   playGlassShatterSound,
+  playSplashSound,
+  playFreezeCrackleSound,
+  playFreezeCrackSound,
   setMuted as setAudioMuted,
   isMuted as isAudioMuted,
 } from './audio';
@@ -94,4 +97,25 @@ export function fxGlassShatter(xPx: number, yPx: number, color: number): void {
   vibrate(MATERIALS.glass.feel.vibrate);
   effects?.shatter(xPx, yPx, color);
   effects?.hitStop(HIT_STOP_MS);
+}
+
+/** Called once a falling freeze piece first touches something and starts converting to ice. */
+export function fxFreezeSplash(xPx: number, yPx: number): void {
+  playSplashSound();
+  effects?.dust(xPx, yPx, 6, MATERIALS.freeze.colors.fill);
+}
+
+/** Called once the freeze piece's compound ice body is built (the ~0.3s "freezing" beat). */
+export function fxFreezeSolidify(xPx: number, yPx: number, spreadPx: number): void {
+  playFreezeCrackleSound();
+  vibrate(MATERIALS.freeze.feel.vibrate);
+  effects?.frost(xPx, yPx, spreadPx, MATERIALS.freeze.freeze.iceColors.fill);
+  effects?.flashScreen(0.25, 220);
+}
+
+/** Called each time a glue joint between the ice and a neighbouring piece snaps. */
+export function fxFreezeCrack(xPx: number, yPx: number): void {
+  playFreezeCrackSound();
+  vibrate([10]);
+  effects?.frost(xPx, yPx, 20, MATERIALS.freeze.freeze.iceColors.fill);
 }

@@ -10,6 +10,7 @@ import { createGlassPieceState, stepGlass, type GlassPieceState } from '../game/
 import { createJellySpring, forceToJellyAmplitude, triggerJellySpring, stepJellySpring, type JellySpringState } from '../game/spring';
 import { drawPieceBase, drawCracks } from '../ui/pieceView';
 import { fxGlassCrack, fxGlassShatter } from '../fx';
+import { FreezeController, type FreezeRuntimeState } from './FreezeController';
 
 const IMPACT_MIN_FORCE = 5;
 const IMPACT_DEBOUNCE_MS = 80;
@@ -20,6 +21,7 @@ export interface PieceRuntime {
   id: number;
   material: MaterialId;
   body: RAPIER.RigidBody;
+  /** primary collider; a frozen ice piece has more in extraColliderHandles (compound body). */
   collider: RAPIER.Collider;
   container: Phaser.GameObjects.Container;
   graphics: Phaser.GameObjects.Graphics;
@@ -30,6 +32,10 @@ export interface PieceRuntime {
   glassState: GlassPieceState | null;
   jellySpring: JellySpringState | null;
   lastImpactAt: number;
+  /** only set for material === 'freeze'; see FreezeController. */
+  freeze: FreezeRuntimeState | null;
+  /** extra collider handles (beyond `collider`) also mapped to this piece in `pieces`, for a frozen ice piece's compound body. */
+  extraColliderHandles: number[];
 }
 
 export type ImpactCallback = (
@@ -42,7 +48,8 @@ export type ImpactCallback = (
 
 export class PieceManager {
   readonly rapierWorld: PhysicsWorld;
-  readonly pieces = new Map<number, PieceRuntime>(); // keyed by collider handle
+  readonly pieces = new Map<number, PieceRuntime>(); // keyed by collider handle (a frozen ice piece has one entry per strip collider)
+  readonly freezeController: FreezeController;
   private nextId = 1;
   private frameForce = new Map<number, number>();
 
@@ -57,6 +64,12 @@ export class PieceManager {
   ) {
     this.rapierWorld = new PhysicsWorld();
     this.materials = materials;
+    this.freezeController = new FreezeController(this, scene, materials);
+  }
+
+  /** Used by FreezeController to id the new compound piece it builds on freeze. */
+  allocatePieceId(): number {
+    return this.nextId++;
   }
 
   spawn(material: MaterialId, xM: number, yM: number): PieceRuntime | null {
@@ -92,31 +105,46 @@ export class PieceManager {
       glassState: material === 'glass' ? createGlassPieceState() : null,
       jellySpring: material === 'jelly' ? createJellySpring() : null,
       lastImpactAt: 0,
+      freeze: material === 'freeze' ? { phase: 'falling', ageS: 0, joints: [], meltStepsDone: 0, originXM: 0, originYM: 0, baseStrips: [] } : null,
+      extraColliderHandles: [],
     };
     this.pieces.set(collider.handle, piece);
     return piece;
   }
 
-  /** Advances physics by dt, applies glass rules and the fail-off-platform rule. */
+  /** Advances physics by dt, applies glass rules, freeze behaviour and the fail-off-platform rule. */
   step(dt: number, failY: number): void {
     this.frameForce.clear();
+    const freezingNow = new Set<PieceRuntime>();
     this.rapierWorld.step(dt, (event) => {
       const p1 = this.pieces.get(event.handle1);
       const p2 = this.pieces.get(event.handle2);
       if (p1) {
         this.frameForce.set(event.handle1, Math.max(this.frameForce.get(event.handle1) ?? 0, event.totalForceMagnitude));
+        if (p1.freeze?.phase === 'falling') freezingNow.add(p1);
         this.handleImpact(p1, p2 ? p2.material : null, event.totalForceMagnitude);
       }
       if (p2) {
         this.frameForce.set(event.handle2, Math.max(this.frameForce.get(event.handle2) ?? 0, event.totalForceMagnitude));
+        if (p2.freeze?.phase === 'falling') freezingNow.add(p2);
         this.handleImpact(p2, p1 ? p1.material : null, event.totalForceMagnitude);
       }
     });
 
+    // Freezing (falling -> compound ice body) happens after the physics step
+    // returns, never inside its contact-force callback (mutating the world
+    // mid-step is unsafe). freezeController.update then handles melt timers
+    // and breaking overloaded glue joints using this frame's forces.
+    for (const piece of freezingNow) this.freezeController.freezePiece(piece);
+    this.freezeController.update(dt, this.frameForce);
+
     const fallen: PieceRuntime[] = [];
     const shattered: PieceRuntime[] = [];
+    const seenIds = new Set<number>(); // a frozen ice piece maps several collider handles to the same PieceRuntime
 
     for (const piece of this.pieces.values()) {
+      if (seenIds.has(piece.id)) continue;
+      seenIds.add(piece.id);
       if (piece.material === 'glass' && piece.glassState) {
         const force = this.frameForce.get(piece.collider.handle) ?? 0;
         const wasCracked = piece.glassState.state === 'cracked';
@@ -180,25 +208,36 @@ export class PieceManager {
   }
 
   countByMaterial(id: MaterialId): number {
+    const seenIds = new Set<number>();
     let n = 0;
-    for (const p of this.pieces.values()) if (p.material === id) n++;
+    for (const p of this.pieces.values()) {
+      if (p.material !== id || seenIds.has(p.id)) continue;
+      seenIds.add(p.id);
+      n++;
+    }
     return n;
   }
 
   private destroy(piece: PieceRuntime, shatterFx: boolean): void {
     const x = piece.container.x;
     const y = piece.container.y;
+    if (piece.freeze) this.freezeController.releaseJoints(piece);
     this.rapierWorld.removeBody(piece.body);
     this.pieces.delete(piece.collider.handle);
+    for (const handle of piece.extraColliderHandles) this.pieces.delete(handle);
     piece.container.destroy();
     if (shatterFx) fxGlassShatter(x, y, this.materials[piece.material].colors.stroke);
   }
 
   clear(): void {
+    const seenIds = new Set<number>();
     for (const piece of Array.from(this.pieces.values())) {
+      if (seenIds.has(piece.id)) continue;
+      seenIds.add(piece.id);
       this.rapierWorld.removeBody(piece.body);
       piece.container.destroy();
     }
     this.pieces.clear();
+    this.freezeController.reset();
   }
 }

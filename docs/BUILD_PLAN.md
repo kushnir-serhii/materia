@@ -15,6 +15,7 @@ Rules: one task = one PR-sized change. Agent column: **S** = `builder` (Sonnet),
 | 0.7 | Audio synth per material (WebAudio, no files) + `navigator.vibrate` patterns | S | no errors; M listens |
 | 0.8 | Effects: dust, shards, camera shake, hit-stop | S | screenshot review (M) |
 | 0.9 | HUD: hearts, height, best, material picker (1–4 keys), reset (R), debug tuning panel | S | Playwright smoke passes |
+| 0.11 | **Freeze spike** (GDD §2.1): fill-to-flat-line shape, freeze, glue joints, melt; debug key 5 | S | Vitest on fill-shape math (volume conserved, flat top); Playwright: freeze on uneven tower → joints > 0, top flat ±0.05 m; screenshot review (M) |
 | 0.10 | **Playtest** by Serhii, tune values in `materials.ts` | M | Serhii says "feels good" |
 
 ## M1 — Game structure

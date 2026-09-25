@@ -4,7 +4,7 @@
 // scrollFactor(0) so it never moves with the camera.
 
 import Phaser from 'phaser';
-import { MATERIALS, MATERIAL_IDS, type MaterialId } from '../game/materials';
+import { MATERIALS, MATERIAL_IDS, ALL_MATERIAL_IDS, type MaterialId } from '../game/materials';
 
 const SCREEN_W = 540;
 const SCREEN_H = 960;
@@ -18,6 +18,7 @@ const MATERIAL_NAMES: Record<MaterialId, string> = {
   stone: 'Stone',
   jelly: 'Jelly',
   glass: 'Glass',
+  freeze: 'Freeze',
 };
 
 export class Hud {
@@ -103,6 +104,27 @@ export class Hud {
         .setDepth(101);
     });
 
+    // 5th, small "Freeze" button (GDD §2.1: never a plain rotation slot, so
+    // it lives apart from the 4 evenly-split material buttons above).
+    const freezeMaterial = MATERIALS.freeze;
+    const freezeBtnW = 64;
+    const freezeBtnH = 28;
+    const freezeCx = SCREEN_W - freezeBtnW / 2 - 8;
+    const freezeCy = buttonY - 42;
+    const freezeBg = scene.add
+      .rectangle(freezeCx, freezeCy, freezeBtnW, freezeBtnH, freezeMaterial.colors.fill, 0.9)
+      .setStrokeStyle(2, freezeMaterial.colors.stroke)
+      .setScrollFactor(0)
+      .setDepth(100)
+      .setInteractive({ useHandCursor: true });
+    freezeBg.on('pointerdown', () => onPickMaterial('freeze'));
+    this.materialButtons.freeze = freezeBg;
+    scene.add
+      .text(freezeCx, freezeCy, `5 · ${MATERIAL_NAMES.freeze}`, { fontSize: '10px', color: '#0a2a3a', fontStyle: 'bold' })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(101);
+
     this.overlay = scene.add.container(SCREEN_W / 2, SCREEN_H / 2).setScrollFactor(0).setDepth(200);
     const overlayBg = scene.add.rectangle(0, 0, SCREEN_W, SCREEN_H, 0x000000, 0.6);
     this.overlayText = scene.add
@@ -145,7 +167,7 @@ export class Hud {
 
   /** Highlights the currently forced/hook material's button; clear/normal border on the rest. */
   setSelectedMaterial(id: MaterialId): void {
-    MATERIAL_IDS.forEach((mid) => {
+    ALL_MATERIAL_IDS.forEach((mid) => {
       const btn = this.materialButtons[mid];
       if (mid === id) btn.setStrokeStyle(4, 0xffffff, 1);
       else btn.setStrokeStyle(2, MATERIALS[mid].colors.stroke, 1);

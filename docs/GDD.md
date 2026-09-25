@@ -27,9 +27,23 @@ Units: Rapier meters, 1 m = 50 px. Base piece 2.0 × 0.6 m.
 | Stone | 2.6 | 0.8 | 0.02 | heavy impact shakes camera; crushes glass | low "thud", 45 ms | dust puff, shake |
 | Jelly | 0.9 | 0.9 | 0.55 | bouncy; visual squash/wobble (spring on scaleX/Y), no soft-body | "boing" pitch-up, [15,30,15] | squash + wobble |
 | Glass | 1.5 | 0.25 | 0.15 | crack at impact ≥ **crackForce**; shatter if cracked & hit again, impact ≥ **breakForce**, or carried load ≥ **loadLimit** for 0.5 s | "clink" / "crash", [10,20,60] | crack lines → shards |
+| **Freeze (special)** | 0.9 | 0.5 | 0.0 | see §2.1 — fills gaps, flat top, glues neighbours, melts | "splash" → "crackle" freeze, [20,40,20] | water blob → frost → ice |
 | *Metal (v1.1)* | 3.2 | 0.35 | 0.05 | dents glass-like but never breaks | "clang" | shine |
 | *Rubber (v1.1)* | 1.1 | 1.2 | 0.7 | grippy, very bouncy | "squeak" | — |
 | *Ice (v1.2)* | 0.9 | 0.02 | 0.05 | slippery; melts after 20 s (shrinks) | "tink" | frost |
+
+### 2.1 Freeze (special block)
+
+| Phase | Rule |
+|---|---|
+| Fall | water blob, fixed volume (≈ 2.0 × 0.6 m = 1.2 m²) |
+| Land | probe surface below at ~10 columns across its width; fill gaps up to one **flat top line** (volume-conserving: bigger gaps → lower line) |
+| Freeze | 0.3 s frost effect → becomes one solid body (strip boxes compound collider) |
+| Glue | fixed joints to every body it touches; joint breaks if impact force > breakForce (≈ stone 3 m drop) |
+| Melt | after 20 s glue weakens (joints removed one by one) and the ice slowly shrinks 30% |
+| Spawn | never player-chosen: ~1 in 10 pieces, or reward for 3 perfect drops |
+
+Other specials to consider later: balloon (lifts), TNT (3 s fuse unless covered), honey (sticky top), foam (grows 2×), magnet, sand bag.
 
 All values live in `src/game/materials.ts` and are tuned only there (live tuning panel in debug build).
 
@@ -72,7 +86,7 @@ Tech: AdMob via `@capacitor-community/admob`, IAP via RevenueCat Capacitor or `c
 
 | v0 Prototype (browser) | v1 Release (Android) | Later |
 |---|---|---|
-| 4 materials, 1 shape, hook + drop, hearts, height, sound, vibration, effects, material picker | Endless, 20 levels, Daily, 4 shapes, settings, AdMob, remove-ads IAP, local save, Play Store listing | Metal/rubber/ice, skins, clip recorder, leaderboard (optional server) |
+| 4 materials + Freeze spike, 1 shape, hook + drop, hearts, height, sound, vibration, effects, material picker | Endless, 20 levels, Daily, 4 shapes, settings, AdMob, remove-ads IAP, local save, Play Store listing | Metal/rubber/ice, skins, clip recorder, leaderboard (optional server) |
 
 ## 8. Tech decision
 

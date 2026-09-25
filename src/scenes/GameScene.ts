@@ -35,7 +35,11 @@ function isDebugBuild(): boolean {
   }
 }
 
+/** GDD §2.1: freeze is never a plain rotation slot, it's a ~1-in-10 special roll. */
+const FREEZE_SPAWN_CHANCE = 0.1;
+
 function randomMaterial(): MaterialId {
+  if (Math.random() < FREEZE_SPAWN_CHANCE) return 'freeze';
   return MATERIAL_IDS[Math.floor(Math.random() * MATERIAL_IDS.length)];
 }
 
@@ -69,6 +73,8 @@ declare global {
       reset: () => void;
       stepFast: (seconds: number) => void;
       spawn: (material: MaterialId, xMeters: number, yMeters: number) => void;
+      jointCount: () => number;
+      freezeTopFlatness: () => number;
     };
   }
 }
@@ -197,6 +203,7 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard?.on('keydown-TWO', () => this.forceMaterial('stone'));
     this.input.keyboard?.on('keydown-THREE', () => this.forceMaterial('jelly'));
     this.input.keyboard?.on('keydown-FOUR', () => this.forceMaterial('glass'));
+    this.input.keyboard?.on('keydown-FIVE', () => this.forceMaterial('freeze'));
     this.input.keyboard?.on('keydown-R', () => this.doReset());
   }
 
@@ -229,6 +236,8 @@ export class GameScene extends Phaser.Scene {
       spawn: (material, xMeters, yMeters) => {
         this.pieceManager.spawn(material, xMeters, yMeters);
       },
+      jointCount: () => this.pieceManager.freezeController.jointCount(),
+      freezeTopFlatness: () => this.pieceManager.freezeController.topFlatness(),
     };
   }
 

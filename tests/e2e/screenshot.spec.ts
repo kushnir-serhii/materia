@@ -12,6 +12,8 @@ declare global {
       reset: () => void;
       stepFast: (seconds: number) => void;
       spawn: (material: MaterialId, xMeters: number, yMeters: number) => void;
+      jointCount: () => number;
+      freezeTopFlatness: () => number;
     };
   }
 }
@@ -70,4 +72,29 @@ test('capture M0 screenshot: glass shatter effects', async ({ page }) => {
   });
 
   await page.screenshot({ path: 'docs/screens/m0-shatter.png' });
+});
+
+// Captures the flat top line right after a freeze piece lands and freezes
+// solid on an uneven tower (a wood plank on only the left half of the
+// platform), for docs/screens/ review of GDD §2.1.
+test('capture M0 screenshot: freeze fills an uneven tower flat', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => !!window.__materia, undefined, { timeout: 5000 });
+
+  await page.evaluate(() => {
+    window.__materia!.spawn('wood', 4.4, 14.2);
+    window.__materia!.stepFast(1.5);
+    window.__materia!.spawn('freeze', 5.4, 12);
+  });
+
+  // step in small increments and stop right after it freezes (jointCount
+  // becomes > 0), so the screenshot lands while the frost/flash fx are fresh.
+  await page.evaluate(() => {
+    for (let i = 0; i < 60; i++) {
+      window.__materia!.stepFast(0.05);
+      if (window.__materia!.jointCount() > 0) break;
+    }
+  });
+
+  await page.screenshot({ path: 'docs/screens/m0-freeze.png' });
 });

@@ -176,6 +176,43 @@ export function playImpactSound(material: MaterialId, force: number): void {
   }
 }
 
+/** Filtered noise swoosh, played when a freeze piece lands (before it freezes solid). */
+export function playSplashSound(): void {
+  if (!ctx || !masterGain || muted) return;
+  const c = ctx;
+  const g = allocVoice(c, masterGain, 0.7, 0.35);
+  if (!g) return;
+  const t = c.currentTime;
+  playNoise(c, g, t, 0.3, 0.6, 'bandpass', 900, 0.9);
+  playNoise(c, g, t + 0.02, 0.22, 0.35, 'lowpass', 400, 0.7);
+}
+
+/** Short random clicks + a high shimmer, played once a freeze piece finishes freezing solid. */
+export function playFreezeCrackleSound(): void {
+  if (!ctx || !masterGain || muted) return;
+  const c = ctx;
+  const g = allocVoice(c, masterGain, 0.5, 0.35);
+  if (!g) return;
+  const t = c.currentTime;
+  const clicks = 4 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < clicks; i++) {
+    const delay = Math.random() * 0.25;
+    playNoise(c, g, t + delay, 0.025, 0.4, 'highpass', 3500 + Math.random() * 2000, 2);
+  }
+  playTone(c, g, t, 3200, 0.3, 0.15, 'sine');
+}
+
+/** Short click + shard tinkle, played when a glue joint snaps off the ice. */
+export function playFreezeCrackSound(): void {
+  if (!ctx || !masterGain || muted) return;
+  const c = ctx;
+  const g = allocVoice(c, masterGain, 0.45, 0.15);
+  if (!g) return;
+  const t = c.currentTime;
+  playNoise(c, g, t, 0.05, 0.5, 'highpass', 3800, 1.5);
+  playTone(c, g, t + 0.01, 2600, 0.1, 0.2, 'sine');
+}
+
 /** Sharp click, played when a glass piece cracks. */
 export function playGlassCrackSound(): void {
   if (!ctx || !masterGain || muted) return;

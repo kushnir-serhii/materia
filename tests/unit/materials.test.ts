@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { MATERIALS, MATERIAL_IDS, PLANK_SIZE } from '../../src/game/materials';
+import { MATERIALS, MATERIAL_IDS, ALL_MATERIAL_IDS, PLANK_SIZE } from '../../src/game/materials';
 
 describe('materials', () => {
-  it('has all four material ids', () => {
+  it('has the 4 rotation material ids, plus freeze as a special (not in rotation)', () => {
     expect(MATERIAL_IDS).toEqual(['wood', 'stone', 'jelly', 'glass']);
-    expect(Object.keys(MATERIALS).sort()).toEqual(['glass', 'jelly', 'stone', 'wood']);
+    expect(ALL_MATERIAL_IDS).toEqual(['wood', 'stone', 'jelly', 'glass', 'freeze']);
+    expect(Object.keys(MATERIALS).sort()).toEqual(['freeze', 'glass', 'jelly', 'stone', 'wood']);
   });
 
   it.each(MATERIAL_IDS)('%s has all required fields in sane ranges', (id) => {
@@ -58,6 +59,28 @@ describe('materials', () => {
     // 2 stone stacked (~99N) must exceed it.
     expect(g.loadLimit).toBeGreaterThan(34);
     expect(g.loadLimit).toBeLessThan(99);
+  });
+
+  it('freeze has sane physics/feel and GDD §2.1 timings', () => {
+    const m = MATERIALS.freeze;
+    expect(m.physics.density).toBeCloseTo(0.9);
+    expect(m.physics.friction).toBeCloseTo(0.5);
+    expect(m.physics.restitution).toBe(0);
+    expect(m.feel.vibrate).toEqual([20, 40, 20]);
+    expect(m.freeze.volume).toBeGreaterThan(0);
+    expect(m.freeze.meltStartS).toBeCloseTo(20);
+    expect(m.freeze.meltDurationS).toBeCloseTo(10);
+    expect(m.freeze.shrinkFraction).toBeCloseTo(0.3);
+    expect(m.freeze.glueBreakForce).toBeGreaterThan(0);
+    expect(Number.isInteger(m.freeze.iceColors.fill)).toBe(true);
+    expect(Number.isInteger(m.freeze.iceColors.stroke)).toBe(true);
+  });
+
+  it('every material carries a freeze field (unused unless id === freeze)', () => {
+    for (const id of ALL_MATERIAL_IDS) {
+      expect(MATERIALS[id].freeze).toBeDefined();
+      expect(MATERIALS[id].freeze.volume).toBeGreaterThan(0);
+    }
   });
 
   it('plank size matches GDD base piece', () => {

@@ -12,6 +12,8 @@ declare global {
       reset: () => void;
       stepFast: (seconds: number) => void;
       spawn: (material: MaterialId, xMeters: number, yMeters: number) => void;
+      jointCount: () => number;
+      freezeTopFlatness: () => number;
     };
   }
 }
