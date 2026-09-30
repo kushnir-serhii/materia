@@ -2,6 +2,20 @@
 // unit-testable in isolation; audio.ts and haptics.ts (via fx/index.ts) both
 // read force through these instead of hard-coding their own curves.
 
+import { MATERIALS, type MaterialId } from '../game/materials';
+
+/** Impact voices audio.ts implements, one per material (freeze has its own splash/crackle cues instead of an impact voice). */
+export type ImpactVoice = 'wood' | 'stone' | 'jelly' | 'glass' | 'steel' | 'polystyrene' | 'cardboard';
+const IMPACT_VOICES: ReadonlySet<string> = new Set<ImpactVoice>([
+  'wood', 'stone', 'jelly', 'glass', 'steel', 'polystyrene', 'cardboard',
+]);
+
+/** Which impact voice a *landing piece of this material* plays: always its own (never the other body's), or null for none. */
+export function impactVoiceFor(material: MaterialId): ImpactVoice | null {
+  const sound = MATERIALS[material].feel.sound;
+  return IMPACT_VOICES.has(sound) ? (sound as ImpactVoice) : null;
+}
+
 const MIN_AUDIBLE_FORCE = 3;
 /** Force (N) that maps to ~full volume / haptic intensity. Roughly a big stone drop. */
 const REFERENCE_FORCE = 1200;

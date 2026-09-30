@@ -36,6 +36,12 @@ declare global {
       pieceRotationDeg: (id: number) => number | null;
       jellyTopBottomRatio: () => number;
       pieceIsAirborne: (id: number) => boolean | null;
+      platformWidthM: () => number;
+      heartsCount: () => number;
+      holdState: () => { hook: MaterialId; next: MaterialId; held: MaterialId | null; used: boolean };
+      tapHold: () => boolean;
+      forceGust: (dir: number, strength: number, seconds: number) => void;
+      piecePosM: (id: number) => { x: number; y: number } | null;
     };
   }
 }

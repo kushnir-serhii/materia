@@ -6,7 +6,7 @@
 import Phaser from 'phaser';
 import { MATERIALS, ALL_MATERIAL_IDS, type MaterialId } from '../game/materials';
 import { drawPieceBase, drawWormHoles } from './pieceView';
-import { DEV_PICKER_LAYOUT, WORMY_SWATCH_INDEX } from './devPickerLayout';
+import { DEV_PICKER_LAYOUT, WORMY_SWATCH_INDEX, WIND_SWATCH_INDEX } from './devPickerLayout';
 
 export { DEV_PICKER_LAYOUT };
 
@@ -67,6 +67,7 @@ export class Hud {
     onToggleVibration: () => void,
     debug: boolean,
     onPickWormy: () => void = () => {},
+    onWindNow: () => void = () => {},
   ) {
     this.scene = scene;
     this.heightText = scene.add
@@ -178,6 +179,23 @@ export class Hud {
         .setOrigin(0.5)
         .setScrollFactor(0);
       this.devPanel.add([this.wormySwatch, wormyIcon, label]);
+    }
+
+    // "Wind now" dev button: starts a random gust immediately (wind.ts).
+    {
+      const cx = DEV_PICKER_LAYOUT.swatchCenterX(WIND_SWATCH_INDEX);
+      const cy = DEV_PICKER_LAYOUT.swatchCenterY(WIND_SWATCH_INDEX);
+      const btn = scene.add
+        .rectangle(cx, cy, SWATCH_SIZE, SWATCH_SIZE, 0x6fb7e9, 0.9)
+        .setStrokeStyle(2, 0xcfe8ff)
+        .setScrollFactor(0)
+        .setInteractive({ useHandCursor: true });
+      btn.on('pointerdown', onWindNow);
+      const label = scene.add
+        .text(cx, cy, 'Wind', { fontSize: '9px', color: '#101010', fontStyle: 'bold' })
+        .setOrigin(0.5)
+        .setScrollFactor(0);
+      this.devPanel.add([btn, label]);
     }
 
     // Small text line under the grid showing the selected swatch's props

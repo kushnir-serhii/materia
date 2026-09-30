@@ -3,7 +3,7 @@
 // (which throws at import time outside a browser — Playwright's spec files
 // run under Node, not a page).
 //
-// 8 materials (ALL_MATERIAL_IDS) plus one "Wormy" swatch (forces the next
+// 8 materials (ALL_MATERIAL_IDS) plus a "Wind now" button and one "Wormy" swatch (forces the next
 // piece to a wormy wood variant — see GDD §2.0 "Looks & living details"),
 // laid out 4 per row over 3 rows so the panel stays a reasonable width —
 // plus one text line below the grid showing the selected swatch's props
@@ -21,9 +21,11 @@ const PANEL_TOP_Y = 74;
 const PROPS_LINE_H = 16;
 
 /** Every material swatch plus the extra "Wormy" swatch at the end (index ALL_MATERIAL_IDS.length). */
-export const TOTAL_SWATCHES = ALL_MATERIAL_IDS.length + 1;
+export const TOTAL_SWATCHES = ALL_MATERIAL_IDS.length + 2;
 /** Index of the "Wormy" swatch in the grid (last cell). */
 export const WORMY_SWATCH_INDEX = ALL_MATERIAL_IDS.length;
+/** Index of the "Wind now" button (starts a gust — right after the Wormy swatch). */
+export const WIND_SWATCH_INDEX = ALL_MATERIAL_IDS.length + 1;
 
 const ROWS = Math.ceil(TOTAL_SWATCHES / COLUMNS);
 const GRID_W = COLUMNS * SWATCH_SIZE + (COLUMNS - 1) * SWATCH_GAP;

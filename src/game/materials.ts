@@ -239,10 +239,28 @@ const PROPS: Record<MaterialId, MaterialProps> = {
   steel: { weight: 10, hardness: 10, grip: 3, bounce: 1, airDrag: 0 },
   jelly: { weight: 3, hardness: 1, grip: 9, bounce: 6, airDrag: 0 },
   glass: { weight: 5, hardness: 3, grip: 3, bounce: 1, airDrag: 0 },
-  polystyrene: { weight: 1, hardness: 2, grip: 5, bounce: 2, airDrag: 5 },
+  polystyrene: { weight: 1, hardness: 2, grip: 5, bounce: 0, airDrag: 5 },
   cardboard: { weight: 1, hardness: 2, grip: 6, bounce: 1, airDrag: 5 },
   freeze: { weight: 3, hardness: 6, grip: 5, bounce: 0, airDrag: 0 },
 };
+
+/**
+ * Polystyrene (playtest: "bounces things too much"): props Bounce 0, plus a
+ * hand-tuned dead landing on top of the derived values — restitution ~0.02
+ * (physics.ts also gives it the MIN restitution combine rule, so it can't
+ * bounce the *other* body either) and a bit more damping than stone's.
+ */
+function polystyrenePhysics(): MaterialPhysics {
+  const base = physicsFromProps(PROPS.polystyrene);
+  const restingLinearDamping = 0.12;
+  return {
+    ...base,
+    restitution: 0.02,
+    restingLinearDamping,
+    angularDamping: restingLinearDamping,
+    airborneLinearDamping: restingLinearDamping + airDragToExtraDamping(PROPS.polystyrene.airDrag),
+  };
+}
 
 export const MATERIALS: Record<MaterialId, Material> = {
   wood: {
@@ -342,7 +360,7 @@ export const MATERIALS: Record<MaterialId, Material> = {
   polystyrene: {
     id: 'polystyrene',
     props: PROPS.polystyrene,
-    physics: physicsFromProps(PROPS.polystyrene),
+    physics: polystyrenePhysics(),
     size: PLANK_SIZE,
     colors: {
       // Bright white with a faint warm-grey line/dot texture (pieceView.ts).

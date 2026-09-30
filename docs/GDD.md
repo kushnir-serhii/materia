@@ -9,17 +9,19 @@
 | Step | What happens |
 |---|---|
 | 1. Next piece | A piece (shape + material) swings on a hook above the tower. "Next" preview shows the one after. |
-| 2. Drop | Tap anywhere → piece drops. |
+| 1b. Hold | A **hold** box (capacity 1) sits next to "next". Tap it (key H): the hook piece goes into hold and the next piece comes onto the hook; if hold is already full the two swap. **Once per drop** (resets after each drop); tapping hold never drops a piece. The held piece is drawn mini, like "next". |
+| 2. Drop | Tap anywhere (except the hold box / HUD buttons) → piece drops. |
 | 3. React | Landing plays material sound + haptic + effect (squash, dust, crack, shatter). |
 | 4. Settle | Tower sleeps → height is measured → camera rises. |
-| 5. Fail | A piece falls off the platform → lose 1 of 3 hearts. 0 hearts = run over. |
+| 4b. Wind | Random gusts (every ~12–25 s, never in the first 10 s) blow from the left or right for 1–2 s with a gentle ramp in/out; streaks + an arrow at the top show direction and strength, plus a soft whoosh. See "Wind" below. |
+| 5. Fail | A piece falls off the platform → lose 1 of **5** hearts. 0 hearts = run over. |
 | 6. Result | Score = max stable height (+ combo bonus). Share button records last 10 s (later). |
 
 Session target: 60–120 s per run. One-thumb control.
 
 ## 2. Materials
 
-Units: Rapier meters, 1 m = 50 px. Base piece 2.0 × 0.6 m (every material, cardboard included).
+Units: Rapier meters, 1 m = 50 px. Base piece 2.0 × 0.6 m (every material, cardboard included). The platform is exactly **3 blocks wide (6.0 m)**. With a short tower the platform sits low on screen (top ≈ 70 % down); once the tower gets tall the camera follows and keeps the tower top ≈ 40 % from the top.
 
 ### 2.0 Material properties (designer scale 0–10)
 
@@ -40,7 +42,7 @@ Every material is described by the same designer-facing properties; code maps th
 | **Steel** | 10 | 10 | 3 | 1 | 0 | never breaks; slides; crushes glass & polystyrene; big shake | metallic "clang" + ring |
 | Jelly | 3 | 1 | 9 | 6 | 0 | bouncy, squash/wobble visual | "boing" |
 | Glass | 5 | 3 (brittle) | 3 | 1 | 0 | cracks → shatters by impact or load | "clink" / "crash" |
-| **Polystyrene** | 1 | 2 | 5 | 2 | 5 | falls slowly; **squashes** under load (compresses in steps down to 50 % height, permanent); steel/stone drop crushes it fast | soft "squeak/crunch" |
+| **Polystyrene** | 1 | 2 | 5 | 0 | 5 | falls slowly; **squashes** under load (compresses in steps down to 50 % height, permanent); steel/stone drop crushes it fast; **dead landing**: restitution ≈ 0.02 with the MIN combine rule, so it doesn't bounce whatever lands on it | soft "squeak/crunch" |
 | **Cardboard** | 1 | 2 | 6 | 1 | 5 | box, not a sheet; falls slowly and smoothly, **no rotation**, no flutter; steel/stone drop crushes it fast | hollow "thump", small haptic |
 | Freeze (special) | 3 | 6 | 5 | 0 | 0 | see §2.1 | "splash" → "crackle" |
 | *Rubber (later)* | 3 | 4 | 10 | 8 | 0 | grippy, very bouncy | "squeak" |
@@ -68,6 +70,10 @@ Other specials to consider later: balloon (lifts), TNT (3 s fuse unless covered)
 
 All values live in `src/game/materials.ts` and are tuned only there (live tuning panel in debug build).
 
+### 2.2 Wind
+
+Gusts are scheduled by a seeded RNG (`src/game/wind.ts`): first gust ≥ 12 s in, then every 12–25 s; each lasts 1–2 s, blows left or right, peak strength 0.5–1, smoothstep ramp in/out (0.4 s). Force on each dynamic body = intensity × K × exposed area × dragFactor, where dragFactor = (1 + 0.4 × Air drag) / (1 + Weight) — an applied **force**, not a mass-proportional acceleration, so cardboard / polystyrene drift visibly, wood a little, stone / steel almost not at all. Only falling/dynamic pieces are pushed; the hook is unaffected. Feedback: faint streaks across the screen, an arrow near the top (chevrons = strength), soft whoosh. Dev picker has a "Wind" button.
+
 ## 3. Shapes
 
 v1: plank (2.0×0.6), block (1.0×1.0), long plank (3.0×0.4), small cube (0.7×0.7). Later: triangle, cylinder, L-shape.
@@ -76,7 +82,7 @@ v1: plank (2.0×0.6), block (1.0×1.0), long plank (3.0×0.4), small cube (0.7×
 
 | Mode | Rules | v1? |
 |---|---|---|
-| **Endless** | random sequence, 3 hearts, best height saved | yes |
+| **Endless** | random sequence, 5 hearts, best height saved | yes |
 | **Levels** | 30 hand-tuned levels: reach height X with a fixed sequence ("5 glass under 2 stone"). 1–3 stars (height, pieces left, no hearts lost). New material unlocks every ~8 levels. | yes (20 levels) |
 | **Daily** | seed = `YYYY-MM-DD` → same sequence, wind and platform for everyone. One scored attempt + unlimited practice. Streak counter. | yes |
 | Sandbox | pick any material freely | debug only in v1 |

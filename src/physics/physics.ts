@@ -18,6 +18,11 @@ export const MAX_SUBSTEPS = 4;
 /** Low threshold so every piece reports contact force events (impact + load data). */
 const CONTACT_FORCE_EVENT_THRESHOLD = 0.5;
 
+/** Polystyrene uses the MIN restitution combine rule so a dead foam block also stops bouncing whatever lands on it (Rapier picks the higher-priority rule of the two colliders; Min beats the default Average). */
+function restitutionRule(material: Material): RAPIER.CoefficientCombineRule {
+  return material.id === 'polystyrene' ? RAPIER.CoefficientCombineRule.Min : RAPIER.CoefficientCombineRule.Average;
+}
+
 let inited = false;
 
 /** Must be called once and awaited before creating a PhysicsWorld. */
@@ -134,6 +139,7 @@ export class PhysicsWorld {
       .setDensity(material.physics.density)
       .setFriction(material.physics.friction)
       .setRestitution(material.physics.restitution)
+      .setRestitutionCombineRule(restitutionRule(material))
       .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
       .setContactForceEventThreshold(CONTACT_FORCE_EVENT_THRESHOLD);
     const collider = this.world.createCollider(colliderDesc, body);
@@ -177,6 +183,7 @@ export class PhysicsWorld {
       .setDensity(material.physics.density)
       .setFriction(material.physics.friction)
       .setRestitution(material.physics.restitution)
+      .setRestitutionCombineRule(restitutionRule(material))
       .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
       .setContactForceEventThreshold(CONTACT_FORCE_EVENT_THRESHOLD);
     const collider = this.world.createCollider(colliderDesc, body);
@@ -233,6 +240,7 @@ export class PhysicsWorld {
       .setDensity(material.physics.density)
       .setFriction(material.physics.friction)
       .setRestitution(material.physics.restitution)
+      .setRestitutionCombineRule(restitutionRule(material))
       .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
       .setContactForceEventThreshold(CONTACT_FORCE_EVENT_THRESHOLD);
     return this.world.createCollider(colliderDesc, body);

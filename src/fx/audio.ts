@@ -7,7 +7,7 @@
 // slot from the current quietest one, a quieter new voice is just dropped.
 
 import type { MaterialId } from '../game/materials';
-import { impactToVolume, impactToPitch } from './mapping';
+import { impactToVolume, impactToPitch, impactVoiceFor } from './mapping';
 
 const MAX_VOICES = 8;
 
@@ -135,7 +135,9 @@ export function playImpactSound(material: MaterialId, force: number): void {
   const pMul = impactToPitch(force) * randomPitch();
   const t = c.currentTime;
 
-  switch (material) {
+  const voice = impactVoiceFor(material);
+  if (!voice) return;
+  switch (voice) {
     case 'wood': {
       const g = allocVoice(c, dest, volume, 0.2);
       if (!g) return;
@@ -207,6 +209,32 @@ export function playImpactSound(material: MaterialId, force: number): void {
       break;
     }
   }
+}
+
+/** Soft wind whoosh for a gust: bandpassed noise swelling in and out over `durationS`. */
+export function playWhooshSound(strength: number, durationS: number): void {
+  if (!ctx || !masterGain || muted) return;
+  const c = ctx;
+  const vol = 0.15 + 0.3 * strength;
+  const g = allocVoice(c, masterGain, vol, durationS + 0.3);
+  if (!g) return;
+  const t = c.currentTime;
+  const src = c.createBufferSource();
+  src.buffer = getNoiseBuffer(c);
+  src.loop = true;
+  const f = c.createBiquadFilter();
+  f.type = 'bandpass';
+  f.Q.value = 0.7;
+  f.frequency.setValueAtTime(350, t);
+  f.frequency.linearRampToValueAtTime(900, t + durationS * 0.5);
+  f.frequency.linearRampToValueAtTime(400, t + durationS);
+  const env = c.createGain();
+  env.gain.setValueAtTime(0.0001, t);
+  env.gain.linearRampToValueAtTime(vol, t + durationS * 0.35);
+  env.gain.linearRampToValueAtTime(0.0001, t + durationS);
+  src.connect(f).connect(env).connect(g);
+  src.start(t);
+  src.stop(t + durationS + 0.1);
 }
 
 /** Short squish/crunch, played once per polystyrene compression step. */

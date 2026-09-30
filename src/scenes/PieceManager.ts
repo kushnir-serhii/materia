@@ -50,6 +50,8 @@ const IMPACT_DEBOUNCE_MS = 250;
  */
 const IMPACT_MIN_SPEED_MPS = 0.6;
 const SLOW_VELOCITY_THRESHOLD = 0.05;
+/** Foam is dead (playtest: "bounces things too much"): restitution ~0.02 + MIN combine already stops the direct bounce, but a heavy block landing fast on the light foam also squeezes it into the platform and springs back off the solver's soft contact. Any piece touching polystyrene this step (the foam itself included) therefore can't move UP faster than this (m/s). */
+const FOAM_MAX_REBOUND_SPEED_MPS = 0.25;
 const MAX_REMOVAL_LOG = 20;
 /**
  * Any non-'reset'/'froze'/'culled' removal of a piece younger than this is
@@ -196,6 +198,8 @@ export class PieceManager {
    *  collider handle — reused every frame (see IMPACT_MIN_SPEED_MPS) rather
    *  than allocated fresh, per the no-per-frame-allocations rule. */
   private preStepSpeed = new Map<number, number>();
+  /** Pieces in contact with polystyrene during the current step (see FOAM_MAX_REBOUND_SPEED_MPS). */
+  private foamContacts = new Set<PieceRuntime>();
   private removalLog: RemovalRecord[] = [];
 
   /** Physics/glass values pieces are spawned with. Defaults to the canonical MATERIALS; GameScene swaps in a runtime-mutable clone under `?debug=1` so the tuning panel's sliders affect newly spawned pieces without touching MATERIALS itself. */
@@ -325,10 +329,22 @@ export class PieceManager {
     }
 
     const freezingNow = new Set<PieceRuntime>();
+    this.foamContacts.clear();
     this.rapierWorld.step(dt, (event) => {
       const p1 = this.pieces.get(event.handle1);
       const p2 = this.pieces.get(event.handle2);
-      const approachSpeed = Math.max(this.preStepSpeed.get(event.handle1) ?? 0, this.preStepSpeed.get(event.handle2) ?? 0);
+      if (p1 && p2 && (p1.material === 'polystyrene' || p2.material === 'polystyrene')) {
+        if (!p1.settled) this.foamContacts.add(p1);
+        if (!p2.settled) this.foamContacts.add(p2);
+      }
+      const speed1 = this.preStepSpeed.get(event.handle1) ?? 0;
+      const speed2 = this.preStepSpeed.get(event.handle2) ?? 0;
+      const approachSpeed = Math.max(speed1, speed2);
+      // Only the faster (impacting) body of a contact plays its sound/fx —
+      // otherwise a cardboard box landing on steel also fired the *steel*
+      // piece's own clang (playtest: "cardboard makes a metal sound"). The
+      // slower one still gets its wobble/debounce bookkeeping.
+      const audible1 = speed1 >= speed2;
       // Settled (fixed-body) pieces don't need contact-force tracking, fx or
       // load-checking any more — they're permanent scenery now (see
       // maintainPieceBudget/settlePiece). A fixed body can still generate a
@@ -342,7 +358,7 @@ export class PieceManager {
         );
         this.landPiece(p1);
         if (p1.freeze?.phase === 'falling') freezingNow.add(p1);
-        this.handleImpact(p1, p2 ? p2.material : null, event.totalForceMagnitude, approachSpeed);
+        this.handleImpact(p1, p2 ? p2.material : null, event.totalForceMagnitude, approachSpeed, audible1);
       }
       if (p2 && !p2.settled) {
         this.frameForce.set(event.handle2, Math.max(this.frameForce.get(event.handle2) ?? 0, event.totalForceMagnitude));
@@ -352,9 +368,14 @@ export class PieceManager {
         );
         this.landPiece(p2);
         if (p2.freeze?.phase === 'falling') freezingNow.add(p2);
-        this.handleImpact(p2, p1 ? p1.material : null, event.totalForceMagnitude, approachSpeed);
+        this.handleImpact(p2, p1 ? p1.material : null, event.totalForceMagnitude, approachSpeed, !audible1);
       }
     });
+
+    for (const piece of this.foamContacts) {
+      const v = piece.body.linvel();
+      if (v.y < -FOAM_MAX_REBOUND_SPEED_MPS) piece.body.setLinvel({ x: v.x, y: -FOAM_MAX_REBOUND_SPEED_MPS }, false);
+    }
 
     // Freezing (falling -> compound ice body) happens after the physics step
     // returns, never inside its contact-force callback (mutating the world
@@ -551,7 +572,7 @@ export class PieceManager {
     if (piece.worm) drawWormHoles(piece.graphics, piece.wPx, piece.hPx, piece.worm.level, piece.id, piece.visualPhase);
   }
 
-  private handleImpact(piece: PieceRuntime, otherMaterial: MaterialId | null, force: number, approachSpeed: number): void {
+  private handleImpact(piece: PieceRuntime, otherMaterial: MaterialId | null, force: number, approachSpeed: number, audible = true): void {
     if (force < IMPACT_MIN_FORCE) return;
     // A settled pile keeps reporting contact-force events every step purely
     // from resting weight, with no real approach speed behind them — skip
@@ -567,7 +588,7 @@ export class PieceManager {
       // retrigger more contact events on its own.
       triggerJellySpring(piece.jellySpring, forceToJellyAmplitude(force));
     }
-    this.onImpact(piece.material, otherMaterial, force, piece.container.x, piece.container.y);
+    if (audible) this.onImpact(piece.material, otherMaterial, force, piece.container.x, piece.container.y);
   }
 
   syncRender(): void {

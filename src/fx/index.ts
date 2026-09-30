@@ -14,6 +14,7 @@ import {
   playFreezeCrackSound,
   playSquashSound,
   playMunchSound,
+  playWhooshSound,
   setMuted as setAudioMuted,
   isMuted as isAudioMuted,
 } from './audio';
@@ -180,4 +181,9 @@ export function fxMunch(xPx: number, yPx: number): void {
   playMunchSound();
   vibrate([6]);
   effects?.dust(xPx, yPx, 2, MATERIALS.wood.colors.stroke);
+}
+
+/** Called once when a wind gust starts (soft whoosh scaled to its strength/length). */
+export function fxWindGust(strength: number, durationS: number): void {
+  playWhooshSound(strength, durationS);
 }

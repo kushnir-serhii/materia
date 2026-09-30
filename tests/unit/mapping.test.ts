@@ -44,3 +44,21 @@ describe('impactToHaptic', () => {
     expect(huge).toBeLessThanOrEqual(1);
   });
 });
+
+describe('material -> impact sound mapping', () => {
+  it('every rotation material plays its own voice (never another material\'s)', async () => {
+    const { impactVoiceFor } = await import('../../src/fx/mapping');
+    const { MATERIAL_IDS } = await import('../../src/game/materials');
+    for (const id of MATERIAL_IDS) expect(impactVoiceFor(id)).toBe(id);
+  });
+
+  it('cardboard is its own soft voice, not steel/glass/stone', async () => {
+    const { impactVoiceFor } = await import('../../src/fx/mapping');
+    expect(impactVoiceFor('cardboard')).toBe('cardboard');
+  });
+
+  it('freeze has no impact voice (it uses splash/crackle cues)', async () => {
+    const { impactVoiceFor } = await import('../../src/fx/mapping');
+    expect(impactVoiceFor('freeze')).toBeNull();
+  });
+});

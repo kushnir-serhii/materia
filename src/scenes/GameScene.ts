@@ -34,9 +34,21 @@ import {
   isVibrationEnabled,
   getImpactFxCount,
   resetImpactFxCount,
+  fxWindGust,
 } from '../fx';
 import { Effects } from '../fx/effects';
 import { PieceManager, type RemovalRecord } from './PieceManager';
+import { HoldBox } from '../ui/holdBox';
+import { WindView } from '../ui/windView';
+import { WindForces } from './windForces';
+import { applyHold, type HoldPiece } from '../game/hold';
+import {
+  createWindState,
+  stepWind,
+  forceGust,
+  consumeGustStarted,
+  type WindState,
+} from '../game/wind';
 
 function isDebugBuild(): boolean {
   try {
@@ -59,7 +71,8 @@ function randomMaterial(): MaterialId {
 const SCREEN_W = 540;
 const SCREEN_H = 960;
 
-const PLATFORM_HALF_WIDTH_M = 2.5;
+/** Platform = exactly 3 standard blocks side by side (3 x 2.0 m = 6.0 m). */
+const PLATFORM_HALF_WIDTH_M = 3.0;
 const PLATFORM_HALF_HEIGHT_M = 0.3;
 const GROUND_CENTER_Y_M = 15;
 const FAIL_MARGIN_M = 2;
@@ -71,7 +84,9 @@ const HOOK_SPEED_HEIGHT_FACTOR = 0.03;
 const HOOK_SPEED_MAX = 2.5;
 
 const DROP_COOLDOWN_S = 0.6;
-const HEARTS_MAX = 3;
+const HEARTS_MAX = 5;
+/** Random gusts run in the real game; automated browsers (Playwright sets navigator.webdriver) get none so stack-heavy e2e tests stay deterministic — tests start gusts explicitly via forceGust(). */
+const WIND_AUTO = typeof navigator === 'undefined' || !navigator.webdriver;
 const CAMERA_LERP = 0.08;
 /** Slower lerp when the camera is coming back down (tower got shorter), so a
  *  collapse settles smoothly instead of snapping/bouncing the view. */
@@ -82,6 +97,8 @@ const CAMERA_LERP_DOWN = 0.04;
  *  would bounce the camera too. */
 const CAMERA_DOWN_DELAY_S = 0.5;
 const VIEW_TOP_FRACTION = 0.4;
+/** Short-tower framing (playtest: "platform sits too high"): the platform's top is never framed higher on screen than this fraction of the screen height — i.e. 30% of the screen lower than the VIEW_TOP_FRACTION pin — until the tower grows tall enough that its top reaches VIEW_TOP_FRACTION, after which the camera follows the tower top again. */
+const SHORT_TOWER_PLATFORM_FRACTION = VIEW_TOP_FRACTION + 0.3;
 /** With the bottom material-button row gone, the platform can sit much
  *  closer to the true bottom edge than before — this is the designer's
  *  requested margin (plus the device's safe-area inset, e.g. a gesture
@@ -154,6 +171,18 @@ declare global {
       pieceRotationDeg: (id: number) => number | null;
       jellyTopBottomRatio: () => number;
       pieceIsAirborne: (id: number) => boolean | null;
+      /** Platform collider width in meters (3 standard blocks = 6.0). */
+      platformWidthM: () => number;
+      /** Current hearts (lives) left. */
+      heartsCount: () => number;
+      /** Hook/next/held materials and whether this drop's hold swap is already used. */
+      holdState: () => { hook: MaterialId; next: MaterialId; held: MaterialId | null; used: boolean };
+      /** Same as tapping the HOLD box; true if a swap happened. */
+      tapHold: () => boolean;
+      /** Starts a wind gust now: dir -1 left / +1 right, strength 0..1, duration seconds. */
+      forceGust: (dir: number, strength: number, seconds: number) => void;
+      /** Body centre in meters, or null if the piece doesn't exist. */
+      piecePosM: (id: number) => { x: number; y: number } | null;
     };
   }
 }
@@ -184,6 +213,13 @@ export class GameScene extends Phaser.Scene {
   private pendingWormyOverride: boolean | null = null;
 
   private cooldownRemaining = 0;
+  /** HOLD slot (capacity 1) — see holdPiece(); `holdUsed` limits it to one swap per drop. */
+  private held: HoldPiece | null = null;
+  private holdUsed = false;
+  private holdBox!: HoldBox;
+  private windState: WindState = createWindState(1);
+  private windView!: WindView;
+  private windForces = new WindForces();
   /** id of the most recently successfully dropped piece — test hook only (fuzz's "did my drop survive" check). */
   private lastDroppedId: number | null = null;
   private hearts = HEARTS_MAX;
@@ -293,7 +329,11 @@ export class GameScene extends Phaser.Scene {
       () => this.toggleVibration(),
       this.debug,
       () => this.forceWormyWood(),
+      () => this.startRandomGust(),
     );
+    this.holdBox = new HoldBox(this, () => this.holdPiece());
+    this.windView = new WindView(this);
+    this.windState = createWindState((Date.now() ^ 0x5eed) >>> 0, WIND_AUTO);
     this.hud.setBest(this.bestHeightM);
     this.hud.setMuted(isMuted());
     this.hud.setVibrationEnabled(isVibrationEnabled());
@@ -313,6 +353,10 @@ export class GameScene extends Phaser.Scene {
         this.doReset();
         return;
       }
+      if (this.holdBox.contains(pointer.x, pointer.y)) {
+        this.holdPiece();
+        return;
+      }
       if (this.hud.isPointerOverUI(pointer.x, pointer.y)) return;
       this.drop();
     });
@@ -330,6 +374,7 @@ export class GameScene extends Phaser.Scene {
       this.input.keyboard?.on(`keydown-${KEY_NAMES[i]}`, () => this.forceMaterial(id));
     });
     this.input.keyboard?.on('keydown-R', () => this.doReset());
+    this.input.keyboard?.on('keydown-H', () => this.holdPiece());
   }
 
   private toggleMute(): void {
@@ -393,6 +438,22 @@ export class GameScene extends Phaser.Scene {
       },
       jellyTopBottomRatio: () => JELLY_TOP_WIDTH_RATIO,
       pieceIsAirborne: (id) => this.pieceManager.piecesById.get(id)?.airborne ?? null,
+      platformWidthM: () => PLATFORM_HALF_WIDTH_M * 2,
+      heartsCount: () => this.hearts,
+      holdState: () => ({
+        hook: this.hookMaterial,
+        next: this.nextMaterial,
+        held: this.held?.material ?? null,
+        used: this.holdUsed,
+      }),
+      tapHold: () => this.holdPiece(),
+      forceGust: (dir, strength, seconds) => this.startGust(dir, strength, seconds),
+      piecePosM: (id) => {
+        const piece = this.pieceManager.piecesById.get(id);
+        if (!piece) return null;
+        const t = piece.body.translation();
+        return { x: t.x, y: t.y };
+      },
     };
   }
 
@@ -446,6 +507,13 @@ export class GameScene extends Phaser.Scene {
       this.hookX = this.hookCenterXM + Math.sin(this.hookPhase) * HOOK_AMPLITUDE_M * this.hookDirection;
     }
 
+    const windIntensity = stepWind(this.windState, dt);
+    if (consumeGustStarted(this.windState) && this.windState.gust) {
+      fxWindGust(this.windState.gust.strength, this.windState.gust.durationS);
+    }
+    this.windForces.apply(this.pieceManager.piecesById.values(), this.materials, windIntensity);
+    this.windView.update(windIntensity, dt);
+
     const physicsDt = consumeHitStopDt(dt);
     this.pieceManager.step(physicsDt, this.platformTopY + FAIL_MARGIN_M);
     updateEffects(dt);
@@ -457,6 +525,7 @@ export class GameScene extends Phaser.Scene {
     this.hud.setHeight(this.displayedHeightM);
     this.hud.setBest(this.bestHeightM);
     this.hud.setHearts(this.hearts, HEARTS_MAX);
+    this.holdBox.setHeld(this.held?.material ?? null, this.holdUsed);
     if (this.debug) this.hud.setDebugStats(this.game.loop.actualFps, this.pieceManager.pieces.size);
   }
 
@@ -503,7 +572,12 @@ export class GameScene extends Phaser.Scene {
     const topM = this.pieceManager.tallestRestingTopM();
     if (topM !== null) {
       const referenceTopM = Math.min(topM, this.platformTopY);
-      const desiredScrollY = referenceTopM * PX_PER_M - VIEW_TOP_FRACTION * SCREEN_H;
+      // Follow the tower top at VIEW_TOP_FRACTION, but never frame the
+      // platform higher than SHORT_TOWER_PLATFORM_FRACTION (short towers).
+      const desiredScrollY = Math.min(
+        referenceTopM * PX_PER_M - VIEW_TOP_FRACTION * SCREEN_H,
+        this.platformTopY * PX_PER_M - SHORT_TOWER_PLATFORM_FRACTION * SCREEN_H,
+      );
       this.currentHeightM = Math.max(0, this.platformTopY - topM);
 
       if (!this.hadTower) {
@@ -542,7 +616,7 @@ export class GameScene extends Phaser.Scene {
     // uses restScrollY directly (see the topM === null branch above), and
     // restScrollY is always <= this bound (it sits lower on screen, using
     // the freed-up space), so this min() never pulls it back up.
-    const maxScrollY = this.platformTopY * PX_PER_M - VIEW_TOP_FRACTION * SCREEN_H;
+    const maxScrollY = this.platformTopY * PX_PER_M - SHORT_TOWER_PLATFORM_FRACTION * SCREEN_H;
     this.camTargetY = Math.min(this.camTargetY, maxScrollY);
 
     const lerp = this.cameraGoingDown ? CAMERA_LERP_DOWN : CAMERA_LERP;
@@ -639,6 +713,34 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * HOLD (tap the box / key H): stashes the hook piece and brings the next
+   * one onto the hook, or swaps with the already-held piece. Once per drop;
+   * never drops anything itself. The hook keeps its swing position.
+   */
+  private holdPiece(): boolean {
+    if (this.gameOver || this.cooldownRemaining > 0 || this.holdUsed) return false;
+    const result = applyHold(this.held, { material: this.hookMaterial, wormy: this.hookWormy }, () => {
+      const material = this.nextMaterial;
+      this.nextMaterial = randomMaterial();
+      this.hud.setNextMaterial(this.nextMaterial);
+      return { material, wormy: material === 'wood' ? Math.random() < WORMY_WOOD_HOOK_CHANCE : false };
+    });
+    this.held = result.held;
+    this.holdUsed = true;
+    this.setHookMaterial(result.hook.material, result.hook.wormy);
+    return true;
+  }
+
+  private startGust(dir: number, strength: number, seconds: number): void {
+    forceGust(this.windState, dir >= 0 ? 1 : -1, strength, seconds);
+  }
+
+  /** Dev picker "Wind now": a random-side, strong 1.5 s gust. */
+  private startRandomGust(): void {
+    this.startGust(Math.random() < 0.5 ? -1 : 1, 1, 1.5);
+  }
+
   drop(): boolean {
     if (this.gameOver || this.cooldownRemaining > 0) return false;
     const yM = (this.camScrollY + HOOK_SCREEN_Y_PX) / PX_PER_M;
@@ -659,6 +761,7 @@ export class GameScene extends Phaser.Scene {
     );
     if (!piece) return false;
     this.lastDroppedId = piece.id;
+    this.holdUsed = false; // one hold swap allowed per drop
     this.cooldownRemaining = DROP_COOLDOWN_S;
     return true;
   }
@@ -688,6 +791,9 @@ export class GameScene extends Phaser.Scene {
     this.pendingHeightSinceS = 0;
     this.pendingOverride = null;
     this.pendingWormyOverride = null;
+    this.held = null;
+    this.holdUsed = false;
+    this.windState = createWindState((Date.now() ^ 0x5eed) >>> 0, WIND_AUTO);
     this.lastDroppedId = null;
     this.nextMaterial = randomMaterial();
     this.spawnHookPreview();

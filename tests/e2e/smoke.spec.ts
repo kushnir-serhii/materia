@@ -42,6 +42,12 @@ declare global {
       pieceRotationDeg: (id: number) => number | null;
       jellyTopBottomRatio: () => number;
       pieceIsAirborne: (id: number) => boolean | null;
+      platformWidthM: () => number;
+      heartsCount: () => number;
+      holdState: () => { hook: MaterialId; next: MaterialId; held: MaterialId | null; used: boolean };
+      tapHold: () => boolean;
+      forceGust: (dir: number, strength: number, seconds: number) => void;
+      piecePosM: (id: number) => { x: number; y: number } | null;
     };
   }
 }
@@ -73,6 +79,11 @@ test('dropping wood pieces creates physics bodies', async ({ page }) => {
 
   for (let i = 0; i < 5; i++) {
     await page.evaluate(() => {
+      // Force wood every time: the hook's random next material (freeze
+      // converts/removes its falling piece, glass shatters, steel/jelly can
+      // slide off) made this count flaky, and it's only checking that drops
+      // create bodies.
+      window.__materia!.setMaterial('wood');
       window.__materia!.drop();
       window.__materia!.stepFast(1); // clears the 0.6s drop cooldown, lets it fall/settle
     });
@@ -166,7 +177,7 @@ const SCREEN_BOTTOM_LIMIT_PX = 960 - PLATFORM_BOTTOM_MARGIN_PX + 20; // small to
 // VIEW_TOP_FRACTION in GameScene.ts.
 const VIEW_TOP_FRACTION_PX = 0.4 * 960;
 
-test('a short tower is framed with its top near 40% from the top, never lower, and clear of the screen bottom', async ({
+test('a short tower keeps the platform low (top ~70% down the screen); a tall tower is framed with its top near 40% from the top', async ({
   page,
 }) => {
   const pageErrors: Error[] = [];
@@ -175,10 +186,9 @@ test('a short tower is framed with its top near 40% from the top, never lower, a
   await page.goto('/');
   await page.waitForFunction(() => !!window.__materia, undefined, { timeout: 5000 });
 
-  // A modest 3-piece tower — short enough that a wrong "stay at the wide
-  // initial view" clamp (the actual bug: it pinned the camera to the
-  // near-empty-board framing for any short/medium tower) would show the top
-  // noticeably lower than 40% from the top.
+  // A modest 3-piece tower: platform is lowered (SHORT_TOWER_PLATFORM_FRACTION
+  // = 0.7 of the screen height in GameScene.ts) instead of being dragged up
+  // to pin a tiny tower's top at 40%.
   await page.evaluate(() => {
     let restingYM = 14.4;
     for (let i = 0; i < 3; i++) {
@@ -186,17 +196,31 @@ test('a short tower is framed with its top near 40% from the top, never lower, a
       window.__materia!.stepFast(1.2);
       restingYM -= 0.6;
     }
+    window.__materia!.stepFast(2);
   });
 
+  const platformY = await page.evaluate(() => window.__materia!.platformScreenY());
+  expect(platformY).toBeGreaterThan(0.7 * 960 - 25);
+  expect(platformY).toBeLessThan(SCREEN_BOTTOM_LIMIT_PX);
+  const shortTopY = await page.evaluate(() => window.__materia!.towerTopScreenY());
+  expect(shortTopY).not.toBeNull();
+  expect(shortTopY as number).toBeGreaterThan(VIEW_TOP_FRACTION_PX);
+
+  // A tall tower (stones, 12 x 0.6 m = 7.2 m): the camera follows, top at ~40%.
+  await page.evaluate(() => {
+    let restingYM = 14.4 - 3 * 0.6;
+    for (let i = 0; i < 12; i++) {
+      window.__materia!.spawn('stone', 5.4, restingYM - 1.5);
+      window.__materia!.stepFast(0.9);
+      restingYM -= 0.6;
+    }
+    window.__materia!.stepFast(4);
+  });
   const topY = await page.evaluate(() => window.__materia!.towerTopScreenY());
   expect(topY).not.toBeNull();
-  // Within a reasonable band of VIEW_TOP_FRACTION (40%), and never lower
-  // (further down the screen) than that.
   expect(topY as number).toBeLessThanOrEqual(VIEW_TOP_FRACTION_PX + 40);
   expect(topY as number).toBeGreaterThan(0);
-
-  const platformY = await page.evaluate(() => window.__materia!.platformScreenY());
-  expect(platformY).toBeLessThan(SCREEN_BOTTOM_LIMIT_PX);
+  expect(await page.evaluate(() => window.__materia!.platformScreenY())).toBeLessThan(SCREEN_BOTTOM_LIMIT_PX);
   expect(pageErrors).toEqual([]);
 });
 

@@ -100,12 +100,12 @@ export function gripToFriction(grip: number): number {
 /**
  * Bounce -> restitution. Stone (B0) ~0.01, jelly (B6) ~0.55 exactly match
  * their old values; wood/glass/steel share Bounce=1 (~0.1-0.15 pre-props) —
- * compromise at 0.12; polystyrene (B2) gets a little spring of its own.
+ * compromise at 0.12; polystyrene is B0 (dead landing; see materials.ts).
  */
 const BOUNCE_RESTITUTION: ReadonlyArray<readonly [number, number]> = [
-  [0, 0.01], // stone
+  [0, 0.01], // stone / polystyrene (polystyrene overrides to 0.02 in materials.ts)
   [1, 0.12], // wood / glass / steel / cardboard
-  [2, 0.2], // polystyrene
+  [2, 0.2], // shape point
   [6, 0.55], // jelly
   [10, 0.85],
 ];
@@ -124,9 +124,9 @@ export function bounceToRestitution(bounce: number): number {
  * this mapping monotonic in bounce (see materials.ts's props.ts import doc).
  */
 const BOUNCE_RESTING_DAMPING: ReadonlyArray<readonly [number, number]> = [
-  [0, 0.03], // stone / freeze
+  [0, 0.03], // stone / freeze (polystyrene overrides to 0.12 in materials.ts)
   [1, 0.05], // wood / glass / steel / cardboard
-  [2, 0.07], // polystyrene
+  [2, 0.07], // shape point
   [6, 0.4], // jelly
   [10, 0.55],
 ];
